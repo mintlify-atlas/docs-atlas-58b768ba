@@ -1,0 +1,98 @@
+{
+  "projectType": "cli-tool",
+  "projectName": "Claude Code Copilot",
+  "projectDescription": "Local proxy that translates Anthropic API to GitHub Copilot API, enabling free Claude Code usage via Copilot subscription",
+  "theme": "aspen",
+  "primaryColor": "#8B5CF6",
+  "lightColor": "#A78BFA",
+  "darkColor": "#6D28D9",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Setup",
+            "pages": [
+              "setup/installation",
+              "setup/authentication",
+              "setup/docker"
+            ]
+          },
+          {
+            "group": "Usage",
+            "pages": [
+              "usage/launching-claude",
+              "usage/web-search",
+              "usage/model-selection"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/environment-variables",
+              "configuration/ports",
+              "configuration/search-providers"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/troubleshooting",
+              "guides/docker-deployment",
+              "guides/advanced-configuration"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core Components",
+            "pages": [
+              "api/proxy-server",
+              "api/authentication",
+              "api/message-translation"
+            ]
+          },
+          {
+            "group": "Scripts",
+            "pages": [
+              "api/auth-script",
+              "api/proxy-script",
+              "api/launch-script"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Full API translation between Anthropic Messages API and OpenAI Chat Completions",
+    "OAuth device code authentication with GitHub Copilot",
+    "Web search capability via Brave Search API or DuckDuckGo",
+    "Docker support with automatic restart on reboot",
+    "Streaming and non-streaming response translation",
+    "Support for Claude Opus, Sonnet, and Haiku models",
+    "Zero external dependencies - pure Node.js",
+    "Automatic proxy startup via launch script"
+  ],
+  "publicApiSurface": [
+    "POST /v1/messages - Main messages endpoint (Anthropic format)",
+    "GET /health - Health check endpoint",
+    "GET /models - List available Claude models",
+    "POST /count_tokens - Token counting endpoint",
+    "node scripts/auth.mjs - GitHub OAuth authentication",
+    "node scripts/proxy.mjs - Start proxy server",
+    "bash scripts/launch.sh - Auto-start proxy and Claude Code",
+    "docker compose up -d - Run proxy in Docker"
+  ]
+}
