@@ -95,6 +95,20 @@ The Claude Code Copilot proxy is configured through environment variables. These
   Source: `scripts/proxy.mjs:24`
 </ParamField>
 
+## Debugging
+
+<ParamField path="DEBUG_STREAM" type="string" default="">
+  Enable debug logging for streaming responses. Set to `"1"` to see detailed stream chunk information.
+
+  ```bash
+  DEBUG_STREAM=1 node scripts/proxy.mjs
+  ```
+
+  When enabled, the proxy logs each streaming chunk with delta information and finish reasons to help debug streaming issues.
+
+  Source: `scripts/proxy.mjs:689`
+</ParamField>
+
 ## Claude Code integration
 
 <ParamField path="ANTHROPIC_BASE_URL" type="string" required>
