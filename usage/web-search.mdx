@@ -1,0 +1,421 @@
+---
+title: Web search
+description: Configure and use web search functionality with Claude Code
+---
+
+The proxy emulates Anthropic's `web_search_20250305` tool, allowing Claude Code to search the web for current information. This happens transparently when you enable web search in Claude Code.
+
+## How web search works
+
+When Claude Code sends a request with the `web_search_20250305` tool enabled:
+
+1. The proxy detects the web search tool in the request
+2. When the model returns a `web_search` tool call, the proxy executes the search
+3. Search results are formatted and fed back to the model
+4. This loop continues until the model has enough information or reaches the max search limit
+5. The final response includes all content and search results
+
+<Info>
+  The proxy handles web search internally using a non-streaming loop, even when Claude Code requests streaming responses. This ensures search results are properly integrated.
+</Info>
+
+## Search providers
+
+The proxy uses a fallback chain of search providers to ensure reliability:
+
+<Steps>
+  <Step title="Brave Search API (optional)">
+    The highest quality results, but requires an API key. Free tier provides 2,000 queries per month.
+    
+    ```bash
+    export BRAVE_API_KEY=your_api_key_here
+    ```
+    
+    Get your free API key at [api.search.brave.com](https://api.search.brave.com/)
+  </Step>
+  
+  <Step title="DuckDuckGo Lite (default)">
+    Free HTML search with no API key required. Used automatically if Brave API is not configured.
+    
+    The proxy parses DuckDuckGo Lite's HTML to extract search results.
+  </Step>
+  
+  <Step title="DuckDuckGo Instant Answer (fallback)">
+    Used if DuckDuckGo Lite fails (e.g., due to CAPTCHA). Provides instant answers and related topics.
+  </Step>
+</Steps>
+
+### Search provider implementation
+
+Here's how the proxy selects and executes searches:
+
+```javascript
+async function executeWebSearch(query) {
+  console.log(`  🔍 Executing web search: "${query}"`)
+
+  if (BRAVE_API_KEY) {
+    const results = await braveSearch(query)
+    if (results && results.length > 0) return results
+    console.log(`  ⚠ Brave Search failed, trying DuckDuckGo Lite...`)
+  }
+
+  const ddgLiteResults = await duckDuckGoLiteSearch(query)
+  if (ddgLiteResults && ddgLiteResults.length > 0) return ddgLiteResults
+
+  console.log(`  ⚠ DuckDuckGo Lite failed, trying instant answer API...`)
+  const instantResults = await duckDuckGoInstantAnswer(query)
+  if (instantResults && instantResults.length > 0) return instantResults
+
+  console.log(`  ⚠ All search providers failed`)
+  return []
+}
+```
+
+<Tip>
+  The proxy automatically falls through to the next provider if one fails, ensuring maximum reliability.
+</Tip>
+
+## Configuring search providers
+
+<Tabs>
+  <Tab title="Brave Search API">
+    Brave Search provides the highest quality results with structured data:
+    
+    ```bash
+    # Get your free API key
+    # Visit: https://api.search.brave.com/
+    
+    # Set the environment variable
+    export BRAVE_API_KEY=BSA_YOUR_API_KEY_HERE
+    
+    # Start the proxy
+    ./scripts/launch.sh
+    ```
+    
+    The Brave Search implementation:
+    
+    ```javascript
+    async function braveSearch(query) {
+      const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${WEB_SEARCH_MAX_RESULTS}`
+      const res = await fetch(url, {
+        headers: {
+          "Accept": "application/json",
+          "Accept-Encoding": "gzip",
+          "X-Subscription-Token": BRAVE_API_KEY,
+        },
+      })
+      const data = await res.json()
+      const results = (data.web?.results || []).slice(0, WEB_SEARCH_MAX_RESULTS)
+      return results.map((r) => ({
+        type: "web_search_result",
+        url: r.url,
+        title: r.title || "",
+        encrypted_content: Buffer.from(r.description || "").toString("base64"),
+        page_age: r.age || null,
+      }))
+    }
+    ```
+    
+    <Info>
+      Brave Search results include page age information, helping the model understand result freshness.
+    </Info>
+  </Tab>
+  
+  <Tab title="DuckDuckGo (default)">
+    DuckDuckGo requires no configuration and works out of the box:
+    
+    ```bash
+    # No API key needed - just start the proxy
+    ./scripts/launch.sh
+    ```
+    
+    The proxy scrapes DuckDuckGo Lite's HTML:
+    
+    ```javascript
+    async function duckDuckGoLiteSearch(query) {
+      const res = await fetch("https://lite.duckduckgo.com/lite/", {
+        method: "POST",
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: `q=${encodeURIComponent(query)}&kl=us-en`,
+      })
+      const html = await res.text()
+      
+      // Check for CAPTCHA
+      if (html.includes("captcha") || html.includes("anomaly")) {
+        return null
+      }
+      
+      // Extract results using regex...
+    }
+    ```
+    
+    <Warning>
+      DuckDuckGo Lite may occasionally return CAPTCHAs. The proxy detects this and falls back to the Instant Answer API.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## Search result limits
+
+Control the number of search results returned per query:
+
+<ParamField path="WEB_SEARCH_MAX_RESULTS" type="integer" default="5">
+  Maximum number of search results to return per query.
+  
+  ```bash
+  # Get more results per search
+  export WEB_SEARCH_MAX_RESULTS=10
+  ./scripts/launch.sh
+  ```
+  
+  ```bash
+  # Get fewer results (faster, less context)
+  export WEB_SEARCH_MAX_RESULTS=3
+  ./scripts/launch.sh
+  ```
+</ParamField>
+
+The proxy uses this value consistently across all search providers:
+
+```javascript
+const WEB_SEARCH_MAX_RESULTS = parseInt(process.env.WEB_SEARCH_MAX_RESULTS || "5", 10)
+```
+
+<Info>
+  More results provide better context but increase response time and token usage. The default of 5 balances quality and performance.
+</Info>
+
+## Web search loop
+
+The proxy implements a multi-turn search loop to allow the model to perform multiple searches:
+
+```javascript
+async function handleWebSearchLoop(openaiReq, token, maxSearches) {
+  const contentBlocks = [] // Accumulated Anthropic content blocks
+  let searchCount = 0
+  
+  for (let iteration = 0; iteration < (maxSearches || 5) + 1; iteration++) {
+    const response = await collectCopilotResponse(currentReq, token)
+    
+    // Check if there's a web_search tool call
+    const webSearchCall = choice.message?.tool_calls?.find(
+      (tc) => tc.function?.name === "web_search"
+    )
+    
+    if (!webSearchCall || searchCount >= (maxSearches || 5)) {
+      // No more searches needed
+      break
+    }
+    
+    // Execute the search
+    searchCount++
+    const searchResults = await executeWebSearch(searchQuery)
+    
+    // Add results to content blocks
+    contentBlocks.push({
+      type: "server_tool_use",
+      id: toolUseId,
+      name: "web_search",
+      input: { query: searchQuery },
+    })
+    
+    contentBlocks.push({
+      type: "web_search_tool_result",
+      tool_use_id: toolUseId,
+      content: searchResults,
+    })
+    
+    // Feed results back to the model for next iteration
+  }
+  
+  return { contentBlocks, lastResponse, searchCount }
+}
+```
+
+<Tip>
+  The model can perform up to 5 searches per request by default (configurable via the `web_search_20250305` tool's `max_uses` parameter).
+</Tip>
+
+## Result format
+
+Search results are returned in Anthropic's `web_search_result` format:
+
+```json
+{
+  "type": "web_search_result",
+  "url": "https://example.com/page",
+  "title": "Example Page Title",
+  "encrypted_content": "QmFzZTY0IGVuY29kZWQgY29udGVudA==",
+  "page_age": "2024-01-15"
+}
+```
+
+<ParamField path="type" type="string" required>
+  Always `"web_search_result"`
+</ParamField>
+
+<ParamField path="url" type="string" required>
+  The URL of the search result
+</ParamField>
+
+<ParamField path="title" type="string" required>
+  The title of the page or search result
+</ParamField>
+
+<ParamField path="encrypted_content" type="string" required>
+  Base64-encoded snippet or description from the search result
+</ParamField>
+
+<ParamField path="page_age" type="string | null">
+  Optional timestamp or age indicator (only available with Brave Search)
+</ParamField>
+
+## Logging and debugging
+
+The proxy logs all web search activity to the console:
+
+```bash
+→ claude-opus-4-6 → claude-opus-4.6 | stream | 2 messages | 🔍 web_search
+  🔍 Web search enabled (max_uses: 5)
+  🔍 Executing web search: "latest news about AI"
+  ✓ Brave Search returned 5 results
+  ✓ Response sent (1 web searches performed)
+```
+
+You can see:
+- When web search is enabled
+- Each search query executed
+- Which provider returned results
+- Total number of searches performed
+
+<Tip>
+  Watch the proxy logs to understand how Claude Code is using web search and troubleshoot any issues.
+</Tip>
+
+## Error handling
+
+The proxy gracefully handles search failures:
+
+<AccordionGroup>
+  <Accordion title="All providers fail">
+    If all search providers fail, the proxy returns an empty result:
+    
+    ```javascript
+    {
+      type: "web_search_tool_result_error",
+      error_code: "unavailable"
+    }
+    ```
+    
+    The model receives this and can continue without search results.
+  </Accordion>
+  
+  <Accordion title="CAPTCHA from DuckDuckGo">
+    The proxy detects CAPTCHA responses and automatically falls back:
+    
+    ```javascript
+    if (html.includes("captcha") || html.includes("anomaly")) {
+      console.log(`  ⚠ DDG Lite returned CAPTCHA`)
+      return null
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Brave API rate limit">
+    If you exceed your Brave API quota, the proxy automatically falls back to DuckDuckGo:
+    
+    ```bash
+    ⚠ Brave API error: 429
+    ⚠ Brave Search failed, trying DuckDuckGo Lite...
+    ✓ DDG Lite returned 5 results
+    ```
+  </Accordion>
+  
+  <Accordion title="Network errors">
+    Network failures are caught and logged, with automatic fallback:
+    
+    ```javascript
+    try {
+      const results = await braveSearch(query)
+      if (results && results.length > 0) return results
+    } catch (err) {
+      console.log(`  ⚠ Brave Search error: ${err.message}`)
+      return null
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Performance considerations
+
+<CardGroup cols={2}>
+  <Card title="Response time" icon="clock">
+    Web searches add latency to responses. Each search takes 1-3 seconds depending on the provider.
+  </Card>
+  
+  <Card title="Token usage" icon="coins">
+    Search results consume input tokens. More results = higher token usage.
+  </Card>
+  
+  <Card title="Multiple searches" icon="repeat">
+    The model can perform up to 5 searches per request, potentially adding 5-15 seconds.
+  </Card>
+  
+  <Card title="Rate limits" icon="gauge-high">
+    Brave API free tier: 2,000 queries/month. DuckDuckGo has no official limits but may CAPTCHA on heavy usage.
+  </Card>
+</CardGroup>
+
+## Best practices
+
+<AccordionGroup>
+  <Accordion title="Use Brave API for production">
+    For reliable, high-quality search results, configure the Brave API:
+    
+    ```bash
+    export BRAVE_API_KEY=your_api_key
+    ```
+    
+    DuckDuckGo is great for testing but may be less reliable at scale.
+  </Accordion>
+  
+  <Accordion title="Adjust result count based on needs">
+    For quick lookups, use fewer results:
+    
+    ```bash
+    export WEB_SEARCH_MAX_RESULTS=3
+    ```
+    
+    For research tasks, use more:
+    
+    ```bash
+    export WEB_SEARCH_MAX_RESULTS=10
+    ```
+  </Accordion>
+  
+  <Accordion title="Monitor search usage">
+    Watch the proxy logs to see how many searches are being performed:
+    
+    ```bash
+    # Docker
+    docker compose logs -f
+    
+    # Direct Node.js
+    # Logs appear in the terminal where proxy.mjs is running
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Model selection" icon="brain" href="/usage/model-selection">
+    Choose the best model for your task
+  </Card>
+  <Card title="Launching Claude" icon="rocket" href="/usage/launching-claude">
+    Different ways to start Claude Code
+  </Card>
+</CardGroup>

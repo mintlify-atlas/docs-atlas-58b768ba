@@ -1,0 +1,309 @@
+---
+title: Proxy server
+description: Learn about the proxy server architecture, endpoints, and request handling
+---
+
+The proxy server translates requests from Anthropic's Messages API format to OpenAI's Chat Completions format and forwards them to GitHub Copilot's API. This allows Claude Code to use GitHub Copilot as its model provider.
+
+## Server architecture
+
+The proxy server is built on Node.js's native HTTP server and runs on port 18080 by default (configurable via `COPILOT_PROXY_PORT`).
+
+```javascript
+import { createServer } from "node:http"
+
+const PORT = parseInt(process.env.COPILOT_PROXY_PORT || "18080", 10)
+const COPILOT_API_BASE = "https://api.githubcopilot.com"
+const USER_AGENT = "claude-code-copilot-provider/1.0.0"
+
+const server = createServer((req, res) => handleRequest(req, res, token))
+server.listen(PORT)
+```
+
+The server handles CORS automatically for all endpoints:
+
+```javascript
+res.setHeader("Access-Control-Allow-Origin", "*")
+res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+res.setHeader("Access-Control-Allow-Headers", "*")
+```
+
+## API endpoints
+
+### POST /v1/messages
+
+The main endpoint for chat completions. Accepts Anthropic Messages API format and returns responses in the same format.
+
+<ParamField path="model" type="string" required>
+  The Anthropic model name (e.g., `claude-opus-4-6`, `claude-sonnet-4-5`). The proxy automatically maps this to the corresponding Copilot model.
+</ParamField>
+
+<ParamField path="messages" type="array" required>
+  Array of message objects with `role` and `content` fields. Supports `user` and `assistant` roles.
+</ParamField>
+
+<ParamField path="system" type="string | array">
+  System prompt as a string or array of content blocks.
+</ParamField>
+
+<ParamField path="max_tokens" type="integer" default={4096}>
+  Maximum number of tokens to generate in the response.
+</ParamField>
+
+<ParamField path="temperature" type="number">
+  Sampling temperature between 0 and 1. Higher values make output more random.
+</ParamField>
+
+<ParamField path="top_p" type="number">
+  Nucleus sampling parameter. Alternative to temperature.
+</ParamField>
+
+<ParamField path="stream" type="boolean" default={false}>
+  Whether to stream the response using Server-Sent Events.
+</ParamField>
+
+<ParamField path="tools" type="array">
+  Array of tool definitions in Anthropic format. The proxy translates these to OpenAI function calling format.
+</ParamField>
+
+<ParamField path="stop_sequences" type="array">
+  Array of strings that will stop generation when encountered.
+</ParamField>
+
+#### Example request
+
+```json
+{
+  "model": "claude-sonnet-4-5",
+  "max_tokens": 1024,
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the capital of France?"
+    }
+  ],
+  "stream": false
+}
+```
+
+#### Example response (non-streaming)
+
+<ResponseField name="id" type="string">
+  Unique identifier for the message.
+</ResponseField>
+
+<ResponseField name="type" type="string">
+  Always `"message"` for successful responses.
+</ResponseField>
+
+<ResponseField name="role" type="string">
+  Always `"assistant"` for responses.
+</ResponseField>
+
+<ResponseField name="model" type="string">
+  The model name from the request.
+</ResponseField>
+
+<ResponseField name="content" type="array">
+  Array of content blocks. Each block has a `type` field (e.g., `"text"`, `"tool_use"`).
+</ResponseField>
+
+<ResponseField name="stop_reason" type="string">
+  Reason the model stopped: `"end_turn"`, `"tool_use"`, or `"max_tokens"`.
+</ResponseField>
+
+<ResponseField name="usage" type="object">
+  Token usage statistics with `input_tokens` and `output_tokens` fields.
+</ResponseField>
+
+```json
+{
+  "id": "msg_1234567890",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-sonnet-4-5",
+  "content": [
+    {
+      "type": "text",
+      "text": "The capital of France is Paris."
+    }
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 12,
+    "output_tokens": 8,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0
+  }
+}
+```
+
+#### Streaming response
+
+When `stream: true`, the endpoint returns Server-Sent Events:
+
+```
+event: message_start
+data: {"type":"message_start","message":{...}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"The"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" capital"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":8}}
+
+event: message_stop
+data: {"type":"message_stop"}
+```
+
+### GET /health
+
+Health check endpoint that returns the server status.
+
+#### Example response
+
+```json
+{
+  "status": "ok",
+  "provider": "github-copilot"
+}
+```
+
+### GET /models
+
+Returns a list of available models in OpenAI format.
+
+#### Example response
+
+```json
+{
+  "data": [
+    { "id": "claude-opus-4-6", "object": "model" },
+    { "id": "claude-sonnet-4-5-20250929", "object": "model" },
+    { "id": "claude-sonnet-4-20250514", "object": "model" },
+    { "id": "claude-opus-4-5-20251101", "object": "model" },
+    { "id": "claude-haiku-4-5", "object": "model" }
+  ]
+}
+```
+
+### POST /count_tokens
+
+Estimates token count for a request. Uses a rough heuristic of ~4 characters per token.
+
+#### Example request
+
+```json
+{
+  "messages": [
+    { "role": "user", "content": "Hello world" }
+  ],
+  "system": "You are a helpful assistant."
+}
+```
+
+#### Example response
+
+```json
+{
+  "input_tokens": 15
+}
+```
+
+## Authentication
+
+The proxy loads the GitHub OAuth token from the auth file at startup:
+
+```javascript
+const AUTH_FILE = process.env.COPILOT_AUTH_FILE || 
+  join(homedir(), ".claude-copilot-auth.json")
+
+function loadAuth() {
+  const data = JSON.parse(readFileSync(AUTH_FILE, "utf-8"))
+  return data.access_token
+}
+```
+
+All requests to GitHub Copilot include:
+
+```javascript
+const headers = {
+  "Content-Type": "application/json",
+  "Authorization": `Bearer ${token}`,
+  "User-Agent": USER_AGENT,
+  "Openai-Intent": "conversation-edits",
+  "x-initiator": "user"
+}
+```
+
+## Error handling
+
+The proxy translates GitHub Copilot errors to Anthropic's error format:
+
+```javascript
+res.end(JSON.stringify({
+  type: "error",
+  error: {
+    type: copilotRes.status === 401 ? "authentication_error"
+      : copilotRes.status === 429 ? "rate_limit_error"
+      : copilotRes.status === 403 ? "permission_error"
+      : "api_error",
+    message: `Copilot API error (${copilotRes.status}): ${errorText}`
+  }
+}))
+```
+
+<Note>
+  The proxy automatically handles token refresh and retry logic for transient errors.
+</Note>
+
+## Web search support
+
+When a request includes the `web_search_20250305` tool, the proxy:
+
+1. Adds a `web_search` function tool to the Copilot request
+2. Executes searches using Brave Search API or DuckDuckGo
+3. Feeds results back to the model
+4. Repeats until no more searches are needed
+
+```javascript
+if (wsConfig.hasWebSearch) {
+  const { contentBlocks, searchCount } = await handleWebSearchLoop(
+    openaiReq, token, wsConfig.maxUses
+  )
+}
+```
+
+See [Message translation](/api/message-translation) for details on tool translation.
+
+## Configuration
+
+<ParamField path="COPILOT_PROXY_PORT" type="integer" default={18080}>
+  Port to run the proxy server on.
+</ParamField>
+
+<ParamField path="COPILOT_AUTH_FILE" type="string" default="~/.claude-copilot-auth.json">
+  Path to the authentication file.
+</ParamField>
+
+<ParamField path="BRAVE_API_KEY" type="string">
+  API key for Brave Search (optional, improves web search quality).
+</ParamField>
+
+<ParamField path="WEB_SEARCH_MAX_RESULTS" type="integer" default={5}>
+  Maximum number of search results to return per query.
+</ParamField>
+
+<ParamField path="DEBUG_STREAM" type="string">
+  Set to `"1"` to enable debug logging for streaming responses.
+</ParamField>

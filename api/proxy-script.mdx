@@ -1,0 +1,568 @@
+---
+title: Proxy server script
+description: Anthropic to GitHub Copilot API translation proxy with web search support
+---
+
+## Overview
+
+The proxy server translates requests between Anthropic's Messages API format and GitHub Copilot's OpenAI-compatible Chat Completions API. It supports streaming, tool calling, vision, and web search capabilities.
+
+## Command
+
+```bash
+node scripts/proxy.mjs
+```
+
+## Configuration
+
+<ParamField path="COPILOT_PROXY_PORT" type="number" default="18080">
+  Port number for the proxy server
+</ParamField>
+
+<ParamField path="COPILOT_AUTH_FILE" type="string" default="~/.claude-copilot-auth.json">
+  Path to authentication token file
+</ParamField>
+
+<ParamField path="BRAVE_API_KEY" type="string" optional>
+  Brave Search API key for enhanced web search results
+</ParamField>
+
+<ParamField path="WEB_SEARCH_MAX_RESULTS" type="number" default="5">
+  Maximum number of search results to return
+</ParamField>
+
+<ParamField path="DEBUG_STREAM" type="string" optional>
+  Set to "1" to enable streaming debug logs
+</ParamField>
+
+## Server creation
+
+```javascript
+const server = createServer((req, res) => handleRequest(req, res, token))
+
+server.listen(PORT, () => {
+  console.log(`✓ Proxy server running on http://localhost:${PORT}`)
+  console.log("  Translates: Anthropic Messages API → Copilot Chat Completions API")
+})
+```
+
+## Request handling
+
+The `handleRequest()` function processes incoming requests and routes them to appropriate handlers:
+
+### Endpoints
+
+<ParamField path="/health" type="GET">
+  Health check endpoint
+  
+  **Response:**
+  ```json
+  {
+    "status": "ok",
+    "provider": "github-copilot"
+  }
+  ```
+</ParamField>
+
+<ParamField path="/v1/messages" type="POST">
+  Main Anthropic Messages API endpoint
+  
+  Accepts Anthropic-format requests and returns Anthropic-format responses
+</ParamField>
+
+<ParamField path="/v1/count_tokens" type="POST">
+  Token counting endpoint
+  
+  **Returns:** Estimated token count (~4 chars per token)
+  ```json
+  {
+    "input_tokens": 1250
+  }
+  ```
+</ParamField>
+
+<ParamField path="/v1/models" type="GET">
+  Available models list
+  
+  **Returns:** Array of supported Claude models
+  ```json
+  {
+    "data": [
+      { "id": "claude-opus-4-6", "object": "model" },
+      { "id": "claude-sonnet-4-5-20250929", "object": "model" }
+    ]
+  }
+  ```
+</ParamField>
+
+## Model mapping
+
+The proxy translates Anthropic model names to Copilot-compatible equivalents:
+
+```javascript
+const MODEL_MAP = {
+  // Opus 4.6
+  "claude-opus-4-6": "claude-opus-4.6",
+  "claude-opus-4-6-20260214": "claude-opus-4.6",
+  "claude-opus-4-6-latest": "claude-opus-4.6",
+  // Sonnet 4.5
+  "claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
+  "claude-sonnet-4-5": "claude-sonnet-4.5",
+  "claude-sonnet-4-5-latest": "claude-sonnet-4.5",
+  // Haiku 4.5
+  "claude-haiku-4-5": "claude-haiku-4.5",
+  "claude-haiku-4-5-20251001": "claude-haiku-4.5",
+  "claude-3-5-haiku-20241022": "claude-haiku-4.5",
+  // ... more mappings
+}
+```
+
+The `mapModel()` function also includes intelligent pattern matching for unknown model names:
+
+```javascript
+function mapModel(anthropicModel) {
+  if (MODEL_MAP[anthropicModel]) return MODEL_MAP[anthropicModel]
+
+  // Pattern matching for unknown dated versions
+  const m = anthropicModel.toLowerCase()
+  if (m.includes("opus") && (m.includes("4.6") || m.includes("4-6"))) return "claude-opus-4.6"
+  if (m.includes("sonnet") && (m.includes("4.5") || m.includes("4-5"))) return "claude-sonnet-4.5"
+  // ... more patterns
+  
+  return anthropicModel // Pass through as-is
+}
+```
+
+## Message translation
+
+### Anthropic to OpenAI format
+
+The `translateMessages()` function converts Anthropic messages to OpenAI format:
+
+```javascript
+function translateMessages(anthropicMessages, system) {
+  const openaiMessages = []
+
+  // System message
+  if (system) {
+    if (typeof system === "string") {
+      openaiMessages.push({ role: "system", content: system })
+    } else if (Array.isArray(system)) {
+      const systemText = system
+        .map((s) => {
+          if (typeof s === "string") return s
+          if (s.type === "text") return s.text
+          return JSON.stringify(s)
+        })
+        .join("\n\n")
+      openaiMessages.push({ role: "system", content: systemText })
+    }
+  }
+
+  for (const msg of anthropicMessages) {
+    // Handle user messages, tool results, etc.
+    // ...
+  }
+
+  return openaiMessages
+}
+```
+
+### Content part translation
+
+```javascript
+function translateContentPart(part) {
+  if (typeof part === "string") {
+    return { type: "text", text: part }
+  }
+
+  switch (part.type) {
+    case "text":
+      return { type: "text", text: part.text }
+    case "image":
+      return {
+        type: "image_url",
+        image_url: {
+          url: `data:${part.source.media_type};base64,${part.source.data}`,
+        },
+      }
+    case "tool_use":
+      return null // Handled separately
+    case "tool_result":
+      return null // Handled separately
+    default:
+      return { type: "text", text: JSON.stringify(part) }
+  }
+}
+```
+
+## Web search implementation
+
+The proxy supports Anthropic's `web_search_20250305` tool with a multi-provider fallback system.
+
+### Search execution
+
+```javascript
+async function executeWebSearch(query) {
+  console.log(`  🔍 Executing web search: "${query}"`)
+
+  if (BRAVE_API_KEY) {
+    const results = await braveSearch(query)
+    if (results && results.length > 0) return results
+    console.log(`  ⚠ Brave Search failed, trying DuckDuckGo Lite...`)
+  }
+
+  const ddgLiteResults = await duckDuckGoLiteSearch(query)
+  if (ddgLiteResults && ddgLiteResults.length > 0) return ddgLiteResults
+
+  console.log(`  ⚠ DuckDuckGo Lite failed, trying instant answer API...`)
+  const instantResults = await duckDuckGoInstantAnswer(query)
+  if (instantResults && instantResults.length > 0) return instantResults
+
+  console.log(`  ⚠ All search providers failed`)
+  return []
+}
+```
+
+### Brave Search provider
+
+```javascript
+async function braveSearch(query) {
+  try {
+    const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${WEB_SEARCH_MAX_RESULTS}`
+    const res = await fetch(url, {
+      headers: {
+        "Accept": "application/json",
+        "Accept-Encoding": "gzip",
+        "X-Subscription-Token": BRAVE_API_KEY,
+      },
+    })
+    if (!res.ok) {
+      console.log(`  ⚠ Brave API error: ${res.status}`)
+      return null
+    }
+    const data = await res.json()
+    const results = (data.web?.results || []).slice(0, WEB_SEARCH_MAX_RESULTS)
+    console.log(`  ✓ Brave Search returned ${results.length} results`)
+    return results.map((r) => ({
+      type: "web_search_result",
+      url: r.url,
+      title: r.title || "",
+      encrypted_content: Buffer.from(r.description || "").toString("base64"),
+      page_age: r.age || null,
+    }))
+  } catch (err) {
+    console.log(`  ⚠ Brave Search error: ${err.message}`)
+    return null
+  }
+}
+```
+
+### DuckDuckGo Lite provider
+
+```javascript
+async function duckDuckGoLiteSearch(query) {
+  try {
+    const res = await fetch("https://lite.duckduckgo.com/lite/", {
+      method: "POST",
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "text/html",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+      body: `q=${encodeURIComponent(query)}&kl=us-en`,
+      redirect: "follow",
+    })
+    if (!res.ok) {
+      console.log(`  ⚠ DDG Lite HTTP error: ${res.status}`)
+      return null
+    }
+    const html = await res.text()
+
+    // Check for CAPTCHA
+    if (html.includes("captcha") || html.includes("anomaly") || html.includes("challenge")) {
+      console.log(`  ⚠ DDG Lite returned CAPTCHA`)
+      return null
+    }
+
+    const results = []
+
+    // Extract result-link elements
+    const linkRegex = /<a\s+rel="nofollow"\s+href="([^"]+)"\s+class='result-link'>([\s\S]*?)<\/a>/g
+    let match
+    const links = []
+    while ((match = linkRegex.exec(html)) !== null) {
+      links.push({
+        url: match[1],
+        title: match[2]
+          .replace(/<\/?b>/g, "")
+          .replace(/&#x27;/g, "'")
+          .replace(/&amp;/g, "&")
+          .trim(),
+      })
+    }
+
+    // Extract snippets and combine
+    // ...
+    
+    return results.length > 0 ? results : null
+  } catch (err) {
+    console.log(`  ⚠ DDG Lite error: ${err.message}`)
+    return null
+  }
+}
+```
+
+### Web search loop
+
+The `handleWebSearchLoop()` function manages iterative web searches:
+
+```javascript
+async function handleWebSearchLoop(openaiReq, token, maxSearches) {
+  const contentBlocks = [] // Accumulated Anthropic content blocks
+  let searchCount = 0
+  let currentReq = { ...openaiReq }
+  let lastResponse = null
+
+  for (let iteration = 0; iteration < (maxSearches || 5) + 1; iteration++) {
+    const response = await collectCopilotResponse(currentReq, token)
+    lastResponse = response
+
+    const choice = response.choices?.[0]
+    if (!choice) break
+
+    // Check if there's a web_search tool call
+    const webSearchCall = choice.message?.tool_calls?.find(
+      (tc) => tc.function?.name === "web_search"
+    )
+
+    if (!webSearchCall || searchCount >= (maxSearches || 5)) {
+      // No web search — we're done
+      // ...
+      break
+    }
+
+    // Execute search and feed results back
+    searchCount++
+    const searchResults = await executeWebSearch(searchQuery)
+    
+    // Build follow-up messages with search results
+    // ...
+  }
+
+  return { contentBlocks, lastResponse, searchCount }
+}
+```
+
+## Tool translation
+
+The proxy translates Anthropic tool definitions to OpenAI function calling format:
+
+```javascript
+function translateTools(anthropicTools) {
+  if (!anthropicTools || anthropicTools.length === 0) return undefined
+
+  return anthropicTools
+    .filter((tool) => tool.type !== "web_search_20250305") // Handled separately
+    .map((tool) => ({
+      type: "function",
+      function: {
+        name: tool.name,
+        description: tool.description || "",
+        parameters: tool.input_schema || { type: "object", properties: {} },
+      },
+    }))
+}
+```
+
+## Streaming translation
+
+The `createStreamTranslator()` function converts OpenAI streaming chunks to Anthropic SSE format:
+
+```javascript
+function createStreamTranslator(model, res) {
+  let messageId = `msg_${Date.now()}`
+  let inputTokens = 0
+  let outputTokens = 0
+  let sentStart = false
+  let toolCallBuffers = {}
+
+  function sendSSE(event, data) {
+    const line = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
+    res.write(line)
+  }
+
+  return {
+    processChunk(chunk) {
+      // Parse and translate chunk
+      // Send appropriate SSE events
+      // ...
+    }
+  }
+}
+```
+
+### Streaming events
+
+The translator emits these Anthropic-compatible events:
+
+1. `message_start` - Start of message with metadata
+2. `content_block_start` - Start of text or tool use block
+3. `content_block_delta` - Incremental content updates
+4. `content_block_stop` - End of content block
+5. `message_delta` - Final metadata (stop reason, tokens)
+6. `message_stop` - End of stream
+
+## Response translation
+
+### OpenAI to Anthropic format
+
+```javascript
+function translateResponseToAnthropic(openaiResponse, model) {
+  const choice = openaiResponse.choices?.[0]
+  const content = []
+
+  // Text content
+  if (choice.message?.content) {
+    content.push({ type: "text", text: choice.message.content })
+  }
+
+  // Tool calls
+  if (choice.message?.tool_calls) {
+    for (const tc of choice.message.tool_calls) {
+      content.push({
+        type: "tool_use",
+        id: tc.id,
+        name: tc.function.name,
+        input: JSON.parse(tc.function.arguments),
+      })
+    }
+  }
+
+  // Map finish reason
+  let stopReason = "end_turn"
+  if (choice.finish_reason === "tool_calls") stopReason = "tool_use"
+  else if (choice.finish_reason === "length") stopReason = "max_tokens"
+
+  return {
+    id: openaiResponse.id || `msg_${Date.now()}`,
+    type: "message",
+    role: "assistant",
+    model: model,
+    content: content,
+    stop_reason: stopReason,
+    usage: {
+      input_tokens: openaiResponse.usage?.prompt_tokens || 0,
+      output_tokens: openaiResponse.usage?.completion_tokens || 0,
+    },
+  }
+}
+```
+
+## Error handling
+
+### Authentication errors
+
+```javascript
+function loadAuth() {
+  if (!existsSync(AUTH_FILE)) {
+    console.error(`✗ Auth file not found: ${AUTH_FILE}`)
+    console.error("  Run 'node scripts/auth.mjs' first to authenticate.")
+    process.exit(1)
+  }
+
+  try {
+    const data = JSON.parse(readFileSync(AUTH_FILE, "utf-8"))
+    if (!data.access_token) {
+      throw new Error("No access_token in auth file")
+    }
+    return data.access_token
+  } catch (err) {
+    console.error(`✗ Failed to read auth file: ${err.message}`)
+    process.exit(1)
+  }
+}
+```
+
+### Copilot API errors
+
+```javascript
+if (!copilotRes.ok) {
+  const errorText = await copilotRes.text()
+  console.error(`✗ Copilot API error: ${copilotRes.status} ${errorText}`)
+
+  // Translate to Anthropic error format
+  res.writeHead(copilotRes.status, { "Content-Type": "application/json" })
+  res.end(
+    JSON.stringify({
+      type: "error",
+      error: {
+        type:
+          copilotRes.status === 401
+            ? "authentication_error"
+            : copilotRes.status === 429
+              ? "rate_limit_error"
+              : copilotRes.status === 403
+                ? "permission_error"
+                : "api_error",
+        message: `Copilot API error (${copilotRes.status}): ${errorText}`,
+      },
+    })
+  )
+}
+```
+
+### Port conflicts
+
+```javascript
+server.on("error", (err) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(`✗ Port ${PORT} is already in use.`)
+    console.error(`  Kill the existing process:  lsof -ti:${PORT} | xargs kill -9`)
+    console.error(`  Or use a different port:    COPILOT_PROXY_PORT=18081 node scripts/proxy.mjs`)
+  } else {
+    console.error(`✗ Server error: ${err.message}`)
+  }
+  process.exit(1)
+})
+```
+
+## Logging
+
+The proxy provides detailed request/response logging:
+
+```
+[2026-03-03T12:34:56.789Z] POST /v1/messages
+  Headers: anthropic-version=2023-06-01, content-type=application/json
+→ claude-sonnet-4-5 → claude-sonnet-4.5 | stream | 3 messages | 🔍 web_search
+  🔍 Web search enabled (max_uses: 5)
+  🔍 Executing web search: "latest AI news"
+  ✓ Brave Search returned 5 results
+  ✓ Response sent (1 web searches performed)
+```
+
+## Graceful shutdown
+
+```javascript
+process.on("SIGINT", () => {
+  console.log("\n\nShutting down proxy server...")
+  server.close()
+  process.exit(0)
+})
+
+process.on("SIGTERM", () => {
+  server.close()
+  process.exit(0)
+})
+```
+
+## Usage with Claude Code
+
+```bash
+ANTHROPIC_BASE_URL=http://localhost:18080 \
+ANTHROPIC_API_KEY=copilot-proxy \
+claude
+```
+
+The API key can be any non-empty string; authentication uses the GitHub token from the auth file.

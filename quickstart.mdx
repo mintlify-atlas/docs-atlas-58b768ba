@@ -1,80 +1,235 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get Claude Code running with GitHub Copilot in under 5 minutes
 ---
 
-## Get started in three steps
+This guide will get you from zero to running Claude Code via GitHub Copilot in under 5 minutes.
 
-Get your documentation site running locally and make your first customization.
+## Prerequisites
 
-### Step 1: Set up your local environment
+Before you begin, make sure you have:
+
+<Check>Active GitHub Copilot subscription (Individual, Business, or Enterprise)</Check>
+<Check>Node.js 18 or higher installed ([download here](https://nodejs.org/))</Check>
+<Check>Claude Code installed globally: `npm install -g @anthropic-ai/claude-code`</Check>
+
+<Tip>
+If you prefer Docker, check out the [Docker setup guide](/setup/docker) for running the proxy as a persistent container.
+</Tip>
+
+## Installation
+
+<Steps>
+  <Step title="Clone the repository">
+    Clone the project to your local machine:
+    
+    ```bash
+    git clone https://github.com/samarth777/claude-code-copilot.git
+    cd claude-code-copilot
+    ```
+    
+    The project has zero dependencies — no `npm install` needed!
+  </Step>
+
+  <Step title="Authenticate with GitHub">
+    Run the authentication script to connect your GitHub Copilot account:
+    
+    ```bash
+    node scripts/auth.mjs
+    ```
+    
+    This will:
+    1. Open your browser automatically to GitHub's device authorization page
+    2. Display a one-time code in your terminal
+    3. Wait for you to enter the code and authorize the application
+    4. Save your access token to `~/.claude-copilot-auth.json`
+    
+    <CodeGroup>
+    ```bash Terminal output
+    ╔══════════════════════════════════════════════════════════╗
+    ║   GitHub Copilot Authentication for Claude Code        ║
+    ╚══════════════════════════════════════════════════════════╝
+
+    Initiating GitHub OAuth device code flow...
+
+    ┌──────────────────────────────────────────────────────────┐
+    │                                                          │
+    │   Your code:  ABCD-1234                                  │
+    │                                                          │
+    │   Open this URL in your browser:                         │
+    │   https://github.com/login/device                        │
+    │                                                          │
+    │   Enter the code above and authorize the application.    │
+    │                                                          │
+    └──────────────────────────────────────────────────────────┘
+
+    (Browser opened automatically)
+
+    Waiting for authorization...
+    ✓ Authenticated as: yourusername (Your Name)
+    ✓ Token saved to: /home/user/.claude-copilot-auth.json
+    ```
+    </CodeGroup>
+    
+    <Note>
+    Your token is saved locally and never shared with anyone except GitHub Copilot.
+    </Note>
+  </Step>
+
+  <Step title="Start Claude Code">
+    Use the launcher script to automatically start the proxy and Claude Code:
+    
+    ```bash
+    ./scripts/launch.sh
+    ```
+    
+    The launcher will:
+    - Check if you're authenticated
+    - Start the proxy server (via Docker if available, otherwise as a Node.js process)
+    - Launch Claude Code with the correct environment variables
+    
+    <CodeGroup>
+    ```bash Terminal output
+    ✓ Proxy already running on port 18080
+    Starting Claude Code via Copilot...
+
+    Claude Code is ready!
+    ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Select a model">
+    Inside Claude Code, use the `/model` command to view and switch between available models:
+    
+    ```
+    /model
+    ```
+    
+    You can choose from:
+    - `claude-opus-4-6` — Most capable
+    - `claude-sonnet-4-5` — Balanced
+    - `claude-sonnet-4` — Fast
+    - `claude-haiku-4-5` — Fastest
+    
+    <Tip>
+    Start with `claude-sonnet-4-5` for the best balance of speed and capability.
+    </Tip>
+  </Step>
+</Steps>
+
+## Verify it's working
+
+Try a simple prompt to verify everything is working:
+
+```
+Write a hello world function in Python
+```
+
+You should see Claude Code respond using your GitHub Copilot subscription!
+
+## Alternative: Manual startup
+
+If you prefer to start the proxy manually instead of using the launcher script:
+
+<Steps>
+  <Step title="Start the proxy server">
+    ```bash
+    node scripts/proxy.mjs
+    ```
+    
+    The proxy will start on port 18080 by default.
+  </Step>
+
+  <Step title="Launch Claude Code with environment variables">
+    In a separate terminal:
+    
+    ```bash
+    ANTHROPIC_BASE_URL=http://localhost:18080 ANTHROPIC_API_KEY=copilot-proxy claude
+    ```
+    
+    <Warning>
+    Make sure to set **both** environment variables. Claude Code needs `ANTHROPIC_BASE_URL` to point to the proxy and `ANTHROPIC_API_KEY` to authenticate (the value can be anything except empty).
+    </Warning>
+  </Step>
+</Steps>
+
+## Troubleshooting
 
 <AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+  <Accordion title="401 Unauthorized from Copilot">
+    Your GitHub token may have expired. Re-authenticate:
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
+    ```bash
+    rm ~/.claude-copilot-auth.json
+    node scripts/auth.mjs
+    ```
   </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+  
+  <Accordion title="EADDRINUSE: address already in use">
+    Port 18080 is already in use. Kill the existing process:
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
+    ```bash
+    lsof -ti:18080 | xargs kill -9
+    ```
+    
+    Or use a different port:
+    
+    ```bash
+    COPILOT_PROXY_PORT=18081 node scripts/proxy.mjs
+    ```
+  </Accordion>
+  
+  <Accordion title="Proxy running but Claude Code shows errors">
+    Make sure both environment variables are set when launching Claude Code:
+    
+    ```bash
+    ANTHROPIC_BASE_URL=http://localhost:18080 ANTHROPIC_API_KEY=copilot-proxy claude
+    ```
+    
+    The `ANTHROPIC_API_KEY` can be any non-empty string — the proxy doesn't validate it.
+  </Accordion>
+  
+  <Accordion title="Node.js version too old">
+    This project requires Node.js 18 or higher. Check your version:
+    
+    ```bash
+    node --version
+    ```
+    
+    If you're on an older version, upgrade from [nodejs.org](https://nodejs.org/).
+  </Accordion>
+  
+  <Accordion title="Claude Code not installed">
+    Install Claude Code globally:
+    
+    ```bash
+    npm install -g @anthropic-ai/claude-code
+    ```
+    
+    Then verify it's installed:
+    
+    ```bash
+    claude --version
+    ```
   </Accordion>
 </AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Docker setup" icon="docker" href="/setup/docker">
+    Run the proxy as a persistent container that survives reboots
+  </Card>
+  
+  <Card title="Web search" icon="magnifying-glass" href="/usage/web-search">
+    Enable web search for up-to-date information
+  </Card>
+  
+  <Card title="Configuration" icon="gear" href="/configuration/environment-variables">
+    Customize ports, auth file location, and more
+  </Card>
+  
+  <Card title="Architecture" icon="diagram-project" href="/api/message-translation">
+    Learn how the proxy translates between APIs
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

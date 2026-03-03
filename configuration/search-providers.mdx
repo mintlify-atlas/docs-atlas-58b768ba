@@ -1,0 +1,303 @@
+---
+title: Search providers
+description: Configure web search providers for Claude Code Copilot
+---
+
+The Claude Code Copilot proxy supports multiple web search providers with automatic fallback. This enables Claude to search the web for current information using the `web_search` tool.
+
+## Available providers
+
+The proxy supports three search providers in order of priority:
+
+1. **Brave Search API** - Best results, requires free API key
+2. **DuckDuckGo Lite** - Good results, free, no API key required (default)
+3. **DuckDuckGo Instant Answer API** - Basic results, free, no API key
+
+Source: `scripts/proxy.mjs:32-49`
+
+## Brave Search (recommended)
+
+Brave Search provides the highest quality results and is recommended for production use.
+
+### Getting a Brave API key
+
+<Steps>
+  <Step title="Create an account">
+    Visit [https://api.search.brave.com/](https://api.search.brave.com/) and sign up for a free account.
+  </Step>
+
+  <Step title="Generate an API key">
+    After signing in, navigate to your dashboard and create a new API key.
+  </Step>
+
+  <Step title="Configure the proxy">
+    Set the `BRAVE_API_KEY` environment variable:
+
+    ```bash
+    export BRAVE_API_KEY="your-api-key-here"
+    node scripts/proxy.mjs
+    ```
+  </Step>
+
+  <Step title="Verify it's working">
+    When you start the proxy with a Brave API key, you'll see:
+
+    ```
+    🔍 Web Search: Brave Search API (configured)
+    ```
+
+    Source: `scripts/proxy.mjs:1336-1341`
+  </Step>
+</Steps>
+
+### How Brave Search works
+
+When a web search is requested:
+
+```javascript scripts/proxy.mjs
+const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${WEB_SEARCH_MAX_RESULTS}`
+const res = await fetch(url, {
+  headers: {
+    "Accept": "application/json",
+    "Accept-Encoding": "gzip",
+    "X-Subscription-Token": BRAVE_API_KEY,
+  },
+})
+```
+
+Source: `scripts/proxy.mjs:52-61`
+
+Results include:
+- `url` - Page URL
+- `title` - Page title
+- `description` - Content snippet
+- `age` - Page age (if available)
+
+## DuckDuckGo Lite (default)
+
+If no `BRAVE_API_KEY` is set, the proxy uses DuckDuckGo Lite as the default provider.
+
+### Features
+
+- **Free** - No API key or registration required
+- **No rate limits** - Suitable for moderate use
+- **HTML scraping** - Parses search results from DuckDuckGo's Lite interface
+- **CAPTCHA detection** - Automatically falls back if CAPTCHA is encountered
+
+### How it works
+
+The proxy scrapes DuckDuckGo's Lite HTML interface:
+
+```javascript scripts/proxy.mjs
+const res = await fetch("https://lite.duckduckgo.com/lite/", {
+  method: "POST",
+  headers: {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+    "Content-Type": "application/x-www-form-urlencoded",
+  },
+  body: `q=${encodeURIComponent(query)}&kl=us-en`,
+})
+```
+
+Source: `scripts/proxy.mjs:82-94`
+
+### Limitations
+
+<Warning>
+  DuckDuckGo Lite may occasionally return CAPTCHA challenges. When this happens, the proxy automatically falls back to the DuckDuckGo Instant Answer API.
+</Warning>
+
+CAPTCHA detection:
+```javascript scripts/proxy.mjs
+if (html.includes("captcha") || html.includes("anomaly") || html.includes("challenge")) {
+  console.log(`  ⚠ DDG Lite returned CAPTCHA`)
+  return null
+}
+```
+
+Source: `scripts/proxy.mjs:102-105`
+
+## DuckDuckGo Instant Answer API
+
+The final fallback provider uses DuckDuckGo's Instant Answer API.
+
+### Features
+
+- **Free** - No API key required
+- **Reliable** - No CAPTCHA or rate limits
+- **Limited results** - Returns instant answers and related topics only
+
+### How it works
+
+```javascript scripts/proxy.mjs
+const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`
+const res = await fetch(url, {
+  headers: { "User-Agent": USER_AGENT },
+})
+```
+
+Source: `scripts/proxy.mjs:166-172`
+
+Returns:
+- Main abstract with URL and text
+- Related topics with links and descriptions
+
+## Fallback mechanism
+
+The proxy automatically tries providers in order until one succeeds:
+
+```javascript scripts/proxy.mjs
+if (BRAVE_API_KEY) {
+  const results = await braveSearch(query)
+  if (results && results.length > 0) return results
+  console.log(`  ⚠ Brave Search failed, trying DuckDuckGo Lite...`)
+}
+
+const ddgLiteResults = await duckDuckGoLiteSearch(query)
+if (ddgLiteResults && ddgLiteResults.length > 0) return ddgLiteResults
+
+console.log(`  ⚠ DuckDuckGo Lite failed, trying instant answer API...`)
+const instantResults = await duckDuckGoInstantAnswer(query)
+if (instantResults && instantResults.length > 0) return instantResults
+
+console.log(`  ⚠ All search providers failed`)
+return []
+```
+
+Source: `scripts/proxy.mjs:35-49`
+
+This ensures that web search remains functional even if one provider fails.
+
+## Configuration
+
+### Set maximum results
+
+Control how many search results are returned:
+
+```bash
+export WEB_SEARCH_MAX_RESULTS=10
+node scripts/proxy.mjs
+```
+
+Default is **5 results**. Source: `scripts/proxy.mjs:24`
+
+### Complete example
+
+<CodeGroup>
+```bash With Brave Search
+# Best results with Brave
+export BRAVE_API_KEY="your-api-key"
+export WEB_SEARCH_MAX_RESULTS=10
+node scripts/proxy.mjs
+
+# Output:
+# 🔍 Web Search: Brave Search API (configured)
+```
+
+```bash Without Brave (default)
+# Uses DuckDuckGo Lite
+node scripts/proxy.mjs
+
+# Output:
+# 🔍 Web Search: DuckDuckGo Lite (free, no API key)
+#    For better results, set BRAVE_API_KEY (free at https://api.search.brave.com/)
+```
+</CodeGroup>
+
+### Docker configuration
+
+Set search provider configuration in your `.env` file:
+
+```bash .env
+BRAVE_API_KEY=your-api-key-here
+WEB_SEARCH_MAX_RESULTS=10
+```
+
+The Docker container will automatically use these settings.
+
+Source: `docker-compose.yml:12-13`
+
+## Search request flow
+
+When Claude requests a web search:
+
+<Steps>
+  <Step title="Tool call received">
+    Claude sends a `web_search` tool call with a query:
+    ```json
+    {
+      "name": "web_search",
+      "input": { "query": "latest news about AI" }
+    }
+    ```
+  </Step>
+
+  <Step title="Provider selection">
+    The proxy tries providers in order:
+    1. Brave Search (if `BRAVE_API_KEY` is set)
+    2. DuckDuckGo Lite
+    3. DuckDuckGo Instant Answer API
+
+    Source: `scripts/proxy.mjs:32-49`
+  </Step>
+
+  <Step title="Results processing">
+    Results are formatted in Anthropic's web search format:
+    ```json
+    {
+      "type": "web_search_result",
+      "url": "https://example.com",
+      "title": "Page title",
+      "encrypted_content": "base64-encoded-snippet",
+      "page_age": "2024-01-15"
+    }
+    ```
+
+    Source: `scripts/proxy.mjs:69-75`
+  </Step>
+
+  <Step title="Results returned to Claude">
+    The proxy sends up to `WEB_SEARCH_MAX_RESULTS` (default: 5) results back to Claude for analysis.
+  </Step>
+</Steps>
+
+## Monitoring search activity
+
+The proxy logs search activity to the console:
+
+```
+🔍 Executing web search: "latest AI news"
+✓ Brave Search returned 5 results
+✓ Response sent (1 web searches performed)
+```
+
+Source: `scripts/proxy.mjs:33,68,1185`
+
+If Brave fails:
+```
+🔍 Executing web search: "latest AI news"
+⚠ Brave Search failed, trying DuckDuckGo Lite...
+✓ DDG Lite returned 5 results
+```
+
+Source: `scripts/proxy.mjs:38,158`
+
+## Best practices
+
+<CardGroup cols={2}>
+  <Card title="Use Brave for production" icon="bolt">
+    Brave Search provides the most reliable and highest quality results. Get a free API key for best performance.
+  </Card>
+
+  <Card title="Set appropriate limits" icon="sliders">
+    Balance result quality with response time by setting `WEB_SEARCH_MAX_RESULTS` between 5-10.
+  </Card>
+
+  <Card title="Monitor fallbacks" icon="triangle-exclamation">
+    Check proxy logs for fallback warnings. Frequent fallbacks may indicate API key issues or rate limiting.
+  </Card>
+
+  <Card title="Test without API key" icon="flask">
+    DuckDuckGo Lite works well for testing and development without requiring registration.
+  </Card>
+</CardGroup>

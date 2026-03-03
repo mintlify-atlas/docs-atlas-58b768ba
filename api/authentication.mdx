@@ -1,0 +1,338 @@
+---
+title: Authentication
+description: Learn about the GitHub OAuth device code flow and token management
+---
+
+The proxy uses GitHub's OAuth device code flow to authenticate with GitHub Copilot. This is the same authentication method used by VS Code and other GitHub Copilot clients.
+
+## Device code flow
+
+The device code flow is designed for devices that don't have a web browser or have limited input capabilities. It works by:
+
+1. Requesting a device code from GitHub
+2. Displaying a user code for the user to enter on GitHub's website
+3. Polling GitHub's token endpoint until the user authorizes the application
+4. Saving the access token for future use
+
+```mermaid
+sequenceDiagram
+    participant CLI as Auth Script
+    participant GitHub as GitHub OAuth
+    participant User as User Browser
+    
+    CLI->>GitHub: POST /login/device/code
+    GitHub-->>CLI: device_code, user_code, verification_uri
+    CLI->>User: Display user_code and verification_uri
+    User->>GitHub: Enter user_code at verification_uri
+    GitHub->>User: Authorize application
+    loop Polling
+        CLI->>GitHub: POST /login/oauth/access_token
+        GitHub-->>CLI: authorization_pending or access_token
+    end
+    CLI->>CLI: Save access_token to file
+```
+
+## Authentication endpoints
+
+### Device code initiation
+
+The authentication script requests a device code from GitHub:
+
+```javascript
+const CLIENT_ID = "Ov23li8tweQw6odWQebz"
+const DEVICE_CODE_URL = "https://github.com/login/device/code"
+
+async function initiateDeviceCode() {
+  const response = await fetch(DEVICE_CODE_URL, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "User-Agent": USER_AGENT,
+    },
+    body: JSON.stringify({
+      client_id: CLIENT_ID,
+      scope: "read:user",
+    }),
+  })
+
+  return response.json()
+}
+```
+
+<ParamField path="client_id" type="string" required>
+  The OAuth application client ID. Uses GitHub Copilot's public client ID.
+</ParamField>
+
+<ParamField path="scope" type="string" required>
+  OAuth scopes to request. Only `read:user` is needed for Copilot access.
+</ParamField>
+
+#### Response
+
+<ResponseField name="device_code" type="string">
+  Device verification code used for polling.
+</ResponseField>
+
+<ResponseField name="user_code" type="string">
+  User-friendly code displayed to the user (e.g., `"ABCD-1234"`).
+</ResponseField>
+
+<ResponseField name="verification_uri" type="string">
+  URL where the user enters the code (typically `https://github.com/login/device`).
+</ResponseField>
+
+<ResponseField name="interval" type="integer">
+  Minimum number of seconds to wait between polling requests.
+</ResponseField>
+
+<ResponseField name="expires_in" type="integer">
+  Number of seconds until the device code expires.
+</ResponseField>
+
+```json
+{
+  "device_code": "3584d83530557fdd1f46af8289938c8ef79f9dc5",
+  "user_code": "ABCD-1234",
+  "verification_uri": "https://github.com/login/device",
+  "interval": 5,
+  "expires_in": 900
+}
+```
+
+### Token polling
+
+The script polls GitHub's token endpoint until the user authorizes the application:
+
+```javascript
+const ACCESS_TOKEN_URL = "https://github.com/login/oauth/access_token"
+
+async function pollForToken(deviceCode, interval) {
+  const pollInterval = (interval + 1) * 1000 // Add safety margin
+
+  while (true) {
+    await new Promise((resolve) => setTimeout(resolve, pollInterval))
+
+    const response = await fetch(ACCESS_TOKEN_URL, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": USER_AGENT,
+      },
+      body: JSON.stringify({
+        client_id: CLIENT_ID,
+        device_code: deviceCode,
+        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+      }),
+    })
+
+    const data = await response.json()
+
+    if (data.access_token) {
+      return data.access_token
+    }
+
+    if (data.error === "authorization_pending") {
+      process.stdout.write(".")
+      continue
+    }
+
+    // Handle other error cases...
+  }
+}
+```
+
+#### Polling errors
+
+The polling loop handles several error states:
+
+<ResponseField name="authorization_pending" type="string">
+  The user hasn't authorized yet. Continue polling.
+</ResponseField>
+
+<ResponseField name="slow_down" type="string">
+  Polling too frequently. Add a 5-second delay before the next request.
+</ResponseField>
+
+<ResponseField name="expired_token" type="string">
+  The device code has expired. Start the flow over.
+</ResponseField>
+
+<ResponseField name="access_denied" type="string">
+  The user denied authorization. Stop polling.
+</ResponseField>
+
+#### Success response
+
+```json
+{
+  "access_token": "gho_16C7e42F292c6912E7710c838347Ae178B4a",
+  "token_type": "bearer",
+  "scope": "read:user"
+}
+```
+
+## Token verification
+
+After receiving an access token, the script verifies it by calling GitHub's user API:
+
+```javascript
+async function verifyToken(token) {
+  const response = await fetch("https://api.github.com/user", {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "User-Agent": USER_AGENT,
+    },
+  })
+
+  if (!response.ok) {
+    throw new Error("Token verification failed")
+  }
+
+  return response.json()
+}
+```
+
+This returns the authenticated user's information:
+
+```json
+{
+  "login": "octocat",
+  "id": 1,
+  "name": "The Octocat",
+  "email": "octocat@github.com",
+  "avatar_url": "https://avatars.githubusercontent.com/u/1?v=4"
+}
+```
+
+## Token storage
+
+The access token is saved to a JSON file for persistence:
+
+```javascript
+const AUTH_FILE = process.env.COPILOT_AUTH_FILE || 
+  join(homedir(), ".claude-copilot-auth.json")
+
+const authData = {
+  access_token: accessToken,
+  provider: "github-copilot",
+  github_user: user.login,
+  created_at: new Date().toISOString(),
+}
+
+writeFileSync(AUTH_FILE, JSON.stringify(authData, null, 2))
+```
+
+### Token file format
+
+The authentication file contains:
+
+<ResponseField name="access_token" type="string">
+  The OAuth access token used for API requests.
+</ResponseField>
+
+<ResponseField name="provider" type="string">
+  Always `"github-copilot"` to identify the token source.
+</ResponseField>
+
+<ResponseField name="github_user" type="string">
+  The GitHub username of the authenticated user.
+</ResponseField>
+
+<ResponseField name="created_at" type="string">
+  ISO 8601 timestamp of when the token was created.
+</ResponseField>
+
+```json
+{
+  "access_token": "gho_16C7e42F292c6912E7710c838347Ae178B4a",
+  "provider": "github-copilot",
+  "github_user": "octocat",
+  "created_at": "2026-03-03T12:00:00.000Z"
+}
+```
+
+## Token loading
+
+The proxy server loads the token at startup:
+
+```javascript
+function loadAuth() {
+  if (!existsSync(AUTH_FILE)) {
+    console.error(`✗ Auth file not found: ${AUTH_FILE}`)
+    console.error("  Run 'node scripts/auth.mjs' first to authenticate.")
+    process.exit(1)
+  }
+
+  try {
+    const data = JSON.parse(readFileSync(AUTH_FILE, "utf-8"))
+    if (!data.access_token) {
+      throw new Error("No access_token in auth file")
+    }
+    return data.access_token
+  } catch (err) {
+    console.error(`✗ Failed to read auth file: ${err.message}`)
+    process.exit(1)
+  }
+}
+```
+
+<Warning>
+  If the auth file is missing or invalid, the proxy will exit with an error. Run `node scripts/auth.mjs` to authenticate.
+</Warning>
+
+## Re-authentication
+
+To re-authenticate with a different GitHub account:
+
+1. Delete the existing auth file:
+   ```bash
+   rm ~/.claude-copilot-auth.json
+   ```
+
+2. Run the authentication script again:
+   ```bash
+   node scripts/auth.mjs
+   ```
+
+The script checks for an existing valid token before starting the flow:
+
+```javascript
+if (existsSync(AUTH_FILE)) {
+  try {
+    const existing = JSON.parse(readFileSync(AUTH_FILE, "utf-8"))
+    if (existing.access_token) {
+      const user = await verifyToken(existing.access_token)
+      console.log(`Already authenticated as: ${user.login}`)
+      return
+    }
+  } catch {
+    console.log("Existing token is invalid, starting fresh authentication...")
+  }
+}
+```
+
+## Security considerations
+
+<Warning>
+  The auth file contains a sensitive access token. Keep it secure and never commit it to version control.
+</Warning>
+
+- The token grants access to your GitHub Copilot subscription
+- Store the token file with restricted permissions (chmod 600)
+- Use environment variable `COPILOT_AUTH_FILE` to customize the location
+- Tokens don't expire automatically but can be revoked from GitHub settings
+
+## Environment variables
+
+<ParamField path="COPILOT_AUTH_FILE" type="string" default="~/.claude-copilot-auth.json">
+  Path to the authentication file. Both the auth script and proxy server use this variable.
+</ParamField>
+
+```bash
+# Custom auth file location
+export COPILOT_AUTH_FILE="/secure/location/copilot-auth.json"
+node scripts/auth.mjs
+node scripts/proxy.mjs
+```

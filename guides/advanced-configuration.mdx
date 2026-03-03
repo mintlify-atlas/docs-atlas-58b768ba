@@ -1,0 +1,614 @@
+---
+title: Advanced configuration
+description: Advanced configuration options and deployment scenarios
+---
+
+This guide covers advanced configuration scenarios for power users and production deployments.
+
+## Multiple proxy instances
+
+You can run multiple proxy instances simultaneously for different use cases or authentication tokens.
+
+### Using different ports
+
+Run multiple instances on different ports:
+
+**Terminal 1:**
+```bash
+COPILOT_PROXY_PORT=18080 node scripts/proxy.mjs
+```
+
+**Terminal 2:**
+```bash
+COPILOT_PROXY_PORT=18081 COPILOT_AUTH_FILE=~/.claude-copilot-auth-work.json node scripts/proxy.mjs
+```
+
+Now you can use different Claude Code sessions:
+
+```bash
+# Personal account
+ANTHROPIC_BASE_URL=http://localhost:18080 ANTHROPIC_API_KEY=copilot-proxy claude
+
+# Work account
+ANTHROPIC_BASE_URL=http://localhost:18081 ANTHROPIC_API_KEY=copilot-proxy claude
+```
+
+### Multiple Docker instances
+
+Create separate Docker Compose configurations:
+
+```yaml docker-compose.personal.yml
+services:
+  proxy-personal:
+    build: .
+    container_name: claude-copilot-personal
+    restart: always
+    ports:
+      - "18080:18080"
+    volumes:
+      - ~/.claude-copilot-auth-personal.json:/root/.claude-copilot-auth.json:ro
+    environment:
+      - COPILOT_PROXY_PORT=18080
+```
+
+```yaml docker-compose.work.yml
+services:
+  proxy-work:
+    build: .
+    container_name: claude-copilot-work
+    restart: always
+    ports:
+      - "18081:18080"
+    volumes:
+      - ~/.claude-copilot-auth-work.json:/root/.claude-copilot-auth.json:ro
+    environment:
+      - COPILOT_PROXY_PORT=18080
+```
+
+Start both instances:
+
+```bash
+docker compose -f docker-compose.personal.yml up -d
+docker compose -f docker-compose.work.yml up -d
+```
+
+## Custom auth file locations
+
+By default, the proxy looks for the auth file at `~/.claude-copilot-auth.json`. You can customize this:
+
+### Environment variable
+
+Set `COPILOT_AUTH_FILE` to use a different location:
+
+```bash
+COPILOT_AUTH_FILE=/path/to/custom/auth.json node scripts/proxy.mjs
+```
+
+The proxy reads this environment variable at startup (scripts/proxy.mjs:19-20):
+
+```javascript
+const AUTH_FILE = 
+  process.env.COPILOT_AUTH_FILE || join(homedir(), ".claude-copilot-auth.json")
+```
+
+### Docker volume mapping
+
+For Docker deployments, map your custom auth file:
+
+```yaml docker-compose.yml
+volumes:
+  - /secure/location/auth.json:/root/.claude-copilot-auth.json:ro
+```
+
+Or use a named volume for better security:
+
+```yaml docker-compose.yml
+volumes:
+  auth-data:/root/.claude-copilot-auth.json:ro
+
+volumes:
+  auth-data:
+    external: true
+```
+
+### Multiple authentication tokens
+
+Authenticate with multiple GitHub accounts:
+
+```bash
+# Personal account
+COPILOT_AUTH_FILE=~/.claude-copilot-auth-personal.json node scripts/auth.mjs
+
+# Work account
+COPILOT_AUTH_FILE=~/.claude-copilot-auth-work.json node scripts/auth.mjs
+```
+
+Then start proxies using the respective auth files (see "Multiple proxy instances" above).
+
+## Debug mode and logging
+
+### Enable stream debugging
+
+For troubleshooting streaming responses, enable detailed chunk logging:
+
+```bash
+DEBUG_STREAM=1 node scripts/proxy.mjs
+```
+
+This logs every chunk received from the Copilot API (scripts/proxy.mjs:689 and 744):
+
+```
+[stream] delta={"content":"Hello"} finish=
+[stream] delta={"content":" world"} finish=
+[stream] delta={} finish=stop
+```
+
+### Request logging
+
+The proxy logs all requests by default:
+
+```
+[2026-03-03T10:15:30.000Z] POST /v1/messages
+  Headers: anthropic-version=2023-06-01, content-type=application/json
+→ claude-sonnet-4-5 → claude-sonnet-4.5 | stream | 3 messages
+  ✓ Response sent
+```
+
+Each log entry shows (scripts/proxy.mjs:862 and 961-963):
+- Timestamp and HTTP method/path
+- Request headers (for debugging)
+- Model mapping (Anthropic model → Copilot model)
+- Stream mode and message count
+- Success/error status
+
+### Web search logging
+
+When web search is enabled, the proxy logs search activities:
+
+```
+🔍 Web search enabled (max_uses: 5)
+🔍 Executing web search: "latest Node.js features"
+✓ Brave Search returned 5 results
+✓ Response sent (2 web searches performed)
+```
+
+Search provider fallback is also logged (scripts/proxy.mjs:38-48):
+
+```
+⚠ Brave Search failed, trying DuckDuckGo Lite...
+⚠ DDG Lite failed, trying instant answer API...
+⚠ All search providers failed
+```
+
+### Suppress logs
+
+To reduce log verbosity, redirect stdout:
+
+```bash
+node scripts/proxy.mjs > /dev/null
+```
+
+Or for Docker:
+
+```yaml docker-compose.yml
+services:
+  proxy:
+    logging:
+      driver: "none"
+```
+
+<Warning>
+  Disabling logs makes debugging difficult. Only do this in production after thorough testing.
+</Warning>
+
+## Performance tuning
+
+### Concurrent requests
+
+The proxy handles concurrent requests efficiently using Node.js's event loop. No configuration needed - it automatically processes multiple Claude Code sessions.
+
+### Connection pooling
+
+Node.js's `fetch` API automatically pools connections to the Copilot API. Default settings work well for most use cases.
+
+For high-concurrency scenarios, you can tune Node.js HTTP agent settings (requires code modification):
+
+```javascript
+import { Agent } from 'node:https'
+
+const agent = new Agent({
+  keepAlive: true,
+  maxSockets: 50,
+  maxFreeSockets: 10,
+  timeout: 60000
+})
+```
+
+### Memory usage
+
+The proxy is extremely lightweight:
+- ~30MB base memory footprint
+- ~1-2MB per active streaming request
+- Zero dependencies means minimal overhead
+
+Docker resource limits:
+
+```yaml docker-compose.yml
+deploy:
+  resources:
+    limits:
+      cpus: '0.5'
+      memory: 256M
+```
+
+### Response buffering
+
+The proxy streams responses without buffering (scripts/proxy.mjs:1243-1275). This provides:
+- Low latency - tokens appear as they're generated
+- Minimal memory usage - no need to buffer large responses
+- Better user experience in Claude Code
+
+## Web search configuration
+
+### Search provider priority
+
+The proxy tries search providers in this order (scripts/proxy.mjs:32-49):
+
+1. **Brave Search API** - If `BRAVE_API_KEY` is set
+2. **DuckDuckGo Lite** - Free HTML scraping
+3. **DuckDuckGo Instant Answer** - Free JSON API
+
+Configure the preferred provider:
+
+```bash
+# Use Brave Search (recommended)
+BRAVE_API_KEY=your_api_key_here node scripts/proxy.mjs
+
+# Use DuckDuckGo only (no API key needed)
+node scripts/proxy.mjs
+```
+
+### Maximum search results
+
+Control how many results are returned per search:
+
+```bash
+WEB_SEARCH_MAX_RESULTS=10 node scripts/proxy.mjs
+```
+
+Default is 5 results (scripts/proxy.mjs:24). More results provide better context but:
+- Increase token usage
+- Slow down response time
+- May exceed rate limits faster
+
+### Search result format
+
+The proxy formats search results as context for the model (scripts/proxy.mjs:322-331):
+
+```
+Web search results:
+
+Title: Example Result
+URL: https://example.com
+Snippet: This is the search result snippet...
+
+Title: Another Result
+...
+```
+
+### Disable web search
+
+The proxy automatically enables web search when Claude Code requests the `web_search_20250305` tool. You cannot disable it from the proxy side - it's controlled by Claude Code's tool configuration.
+
+## Model mapping
+
+The proxy automatically maps Anthropic model names to Copilot model names (scripts/proxy.mjs:362-412):
+
+```javascript
+const MODEL_MAP = {
+  "claude-opus-4-6": "claude-opus-4.6",
+  "claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
+  "claude-sonnet-4-20250514": "claude-sonnet-4",
+  // ... more mappings
+}
+```
+
+### Custom model mappings
+
+To use different models, modify `MODEL_MAP` in scripts/proxy.mjs. For example, to always use GPT-4:
+
+```javascript
+const MODEL_MAP = {
+  "claude-opus-4-6": "gpt-4",
+  "claude-sonnet-4-5": "gpt-4",
+  // Map all Claude models to GPT-4
+}
+```
+
+<Warning>
+  Custom model mappings may break compatibility. Only use models that GitHub Copilot supports.
+</Warning>
+
+### Pattern-based fallback
+
+If a model isn't in `MODEL_MAP`, the proxy uses pattern matching (scripts/proxy.mjs:397-411):
+
+```javascript
+function mapModel(anthropicModel) {
+  if (MODEL_MAP[anthropicModel]) return MODEL_MAP[anthropicModel]
+  
+  const m = anthropicModel.toLowerCase()
+  if (m.includes("opus") && m.includes("4.6")) return "claude-opus-4.6"
+  if (m.includes("sonnet") && m.includes("4.5")) return "claude-sonnet-4.5"
+  // ... more patterns
+  
+  return anthropicModel // Pass through unknown models
+}
+```
+
+This allows the proxy to handle new model versions without code changes.
+
+## Integration with different Claude Code setups
+
+### VS Code integration
+
+If you're using Claude Code from VS Code or another editor integration:
+
+1. **Set environment variables in your shell profile:**
+
+```bash ~/.bashrc or ~/.zshrc
+export ANTHROPIC_BASE_URL=http://localhost:18080
+export ANTHROPIC_API_KEY=copilot-proxy
+```
+
+2. **Or configure in VS Code settings:**
+
+```json settings.json
+{
+  "claude-code.baseURL": "http://localhost:18080",
+  "claude-code.apiKey": "copilot-proxy"
+}
+```
+
+### Remote proxy access
+
+To access the proxy from a different machine:
+
+<Warning>
+  Never expose the proxy to the public internet without authentication. It uses your GitHub Copilot token.
+</Warning>
+
+1. **Bind to all interfaces:**
+
+Modify scripts/proxy.mjs:1331 to listen on 0.0.0.0:
+
+```javascript
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`✓ Proxy server running on http://0.0.0.0:${PORT}`)
+})
+```
+
+2. **Use SSH tunnel (recommended):**
+
+```bash
+ssh -L 18080:localhost:18080 user@proxy-server
+```
+
+Then connect Claude Code to `http://localhost:18080` - the tunnel securely forwards requests.
+
+3. **Docker on remote host:**
+
+```yaml docker-compose.yml
+services:
+  proxy:
+    ports:
+      - "0.0.0.0:18080:18080"
+```
+
+Access from remote machine:
+```bash
+ANTHROPIC_BASE_URL=http://remote-host:18080 ANTHROPIC_API_KEY=copilot-proxy claude
+```
+
+### CI/CD integration
+
+Use the proxy in CI/CD pipelines:
+
+```yaml .github/workflows/claude-code.yml
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Authenticate with Copilot
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo '{"access_token":"$GITHUB_TOKEN"}' > ~/.claude-copilot-auth.json
+      
+      - name: Start proxy
+        run: |
+          docker compose up -d
+          sleep 5
+      
+      - name: Run Claude Code
+        env:
+          ANTHROPIC_BASE_URL: http://localhost:18080
+          ANTHROPIC_API_KEY: copilot-proxy
+        run: |
+          claude "analyze this codebase"
+```
+
+## CORS configuration
+
+The proxy includes permissive CORS headers by default (scripts/proxy.mjs:865-867):
+
+```javascript
+res.setHeader("Access-Control-Allow-Origin", "*")
+res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+res.setHeader("Access-Control-Allow-Headers", "*")
+```
+
+To restrict CORS for security:
+
+```javascript
+// Only allow requests from Claude Code
+res.setHeader("Access-Control-Allow-Origin", "http://localhost:3000")
+```
+
+## API endpoints
+
+The proxy exposes several endpoints:
+
+### Messages API
+
+```
+POST /v1/messages
+```
+
+Main endpoint for Claude Code requests. Accepts Anthropic Messages API format.
+
+### Health check
+
+```
+GET /health
+GET /
+```
+
+Returns proxy status (scripts/proxy.mjs:876-879):
+
+```json
+{
+  "status": "ok",
+  "provider": "github-copilot"
+}
+```
+
+### Token counting
+
+```
+POST /v1/count_tokens
+POST /v1/messages/count_tokens
+```
+
+Estimates token count for requests (scripts/proxy.mjs:886-903). Uses rough estimation:
+- ~4 characters per token
+- Counts system + message text
+
+### Models list
+
+```
+GET /v1/models
+```
+
+Returns available models (scripts/proxy.mjs:906-919):
+
+```json
+{
+  "data": [
+    { "id": "claude-opus-4-6", "object": "model" },
+    { "id": "claude-sonnet-4-5-20250929", "object": "model" },
+    { "id": "claude-sonnet-4-20250514", "object": "model" },
+    { "id": "claude-opus-4-5-20251101", "object": "model" },
+    { "id": "claude-haiku-4-5", "object": "model" }
+  ]
+}
+```
+
+## Security considerations
+
+### Auth token protection
+
+Your auth file contains a GitHub OAuth token. Protect it:
+
+```bash
+# Restrict file permissions
+chmod 600 ~/.claude-copilot-auth.json
+
+# Never commit to git
+echo '.claude-copilot-auth*.json' >> .gitignore
+```
+
+### Docker security
+
+The Dockerfile follows security best practices:
+- Uses official Node.js Alpine image
+- Minimal dependencies (zero npm packages)
+- Auth file mounted read-only (`:ro` flag)
+- Non-root user (Alpine's default node user)
+
+### Network exposure
+
+By default, the proxy only listens on `localhost`. This prevents external access:
+
+```javascript
+server.listen(PORT, () => { // Defaults to localhost
+```
+
+If you need remote access, use SSH tunnels instead of exposing the port directly.
+
+### Rate limiting
+
+The proxy inherits GitHub Copilot's rate limits. Monitor for:
+- 429 Too Many Requests errors
+- Copilot subscription quota warnings
+
+The proxy translates 429 errors to Anthropic's `rate_limit_error` format (scripts/proxy.mjs:1221-1222).
+
+## Monitoring and observability
+
+### Request metrics
+
+The proxy logs key metrics for each request:
+
+```
+→ claude-sonnet-4-5 → claude-sonnet-4.5 | stream | 3 messages | 🔍 web_search
+✓ Response sent (2 web searches performed)
+```
+
+You can parse these logs to track:
+- Request volume
+- Model usage distribution
+- Web search frequency
+- Success/error rates
+
+### Health monitoring
+
+Implement automated health checks:
+
+```bash healthcheck.sh
+#!/bin/bash
+RESPONSE=$(curl -s http://localhost:18080/health)
+STATUS=$(echo $RESPONSE | jq -r '.status')
+
+if [ "$STATUS" != "ok" ]; then
+  echo "Proxy unhealthy: $RESPONSE"
+  exit 1
+fi
+```
+
+Run via cron:
+```cron
+*/5 * * * * /path/to/healthcheck.sh
+```
+
+### Docker health checks
+
+Add health check to docker-compose.yml:
+
+```yaml
+services:
+  proxy:
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:18080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+```
+
+View health status:
+```bash
+docker inspect --format='{{.State.Health.Status}}' claude-copilot-proxy
+```

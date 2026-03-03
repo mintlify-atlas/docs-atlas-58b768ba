@@ -1,0 +1,423 @@
+---
+title: Docker deployment
+description: Complete guide to deploying the proxy with Docker
+---
+
+This guide covers deploying the Claude Code Copilot proxy using Docker and Docker Compose for a production-ready setup that survives reboots.
+
+## Prerequisites
+
+Before deploying with Docker, ensure you have:
+
+- [Docker](https://www.docker.com/) installed and running
+- Docker Compose (included with Docker Desktop)
+- Authenticated with GitHub Copilot (run `node scripts/auth.mjs` first)
+- Auth file exists at `~/.claude-copilot-auth.json`
+
+<Warning>
+  You must authenticate **before** starting the Docker container. The auth file is mounted as a read-only volume.
+</Warning>
+
+## Quick start
+
+The easiest way to start the Docker proxy:
+
+```bash
+docker compose up -d
+```
+
+This will:
+1. Build the Docker image from the Dockerfile
+2. Start the container in detached mode
+3. Enable automatic restarts with `restart: always`
+4. Expose the proxy on port 18080
+
+## Docker Compose configuration
+
+The `docker-compose.yml` defines the complete service configuration:
+
+```yaml docker-compose.yml
+services:
+  proxy:
+    build: .
+    container_name: claude-copilot-proxy
+    restart: always
+    ports:
+      - "18080:18080"
+    volumes:
+      - ~/.claude-copilot-auth.json:/root/.claude-copilot-auth.json:ro
+    environment:
+      - COPILOT_PROXY_PORT=18080
+      - BRAVE_API_KEY=${BRAVE_API_KEY:-}
+      - WEB_SEARCH_MAX_RESULTS=${WEB_SEARCH_MAX_RESULTS:-5}
+```
+
+### Configuration breakdown
+
+**Build context:**
+- `build: .` - Builds image from Dockerfile in current directory
+- Uses the official `node:22-alpine` base image
+- Only copies the proxy script - minimal attack surface
+
+**Container name:**
+- `claude-copilot-proxy` - Fixed name for easy management
+- Allows commands like `docker logs claude-copilot-proxy`
+
+**Restart policy:**
+- `restart: always` - Critical for production deployments
+- Container starts automatically when Docker daemon starts
+- Survives system reboots
+- Restarts if the proxy crashes
+
+**Ports:**
+- `18080:18080` - Maps host port 18080 to container port 18080
+- Change the first number to use a different host port
+- Example: `8080:18080` to expose on port 8080
+
+**Volumes:**
+- Mounts your auth file from `~/.claude-copilot-auth.json` to `/root/.claude-copilot-auth.json`
+- `:ro` flag makes it read-only for security
+- The proxy reads the token on startup (scripts/proxy.mjs:416-432)
+
+**Environment variables:**
+- `COPILOT_PROXY_PORT=18080` - Port the proxy listens on inside the container
+- `BRAVE_API_KEY` - Optional Brave Search API key for web search
+- `WEB_SEARCH_MAX_RESULTS` - Maximum search results per query (default: 5)
+
+## Dockerfile
+
+The Dockerfile creates a minimal container:
+
+```dockerfile Dockerfile
+FROM node:22-alpine
+
+WORKDIR /app
+COPY scripts/proxy.mjs scripts/proxy.mjs
+
+EXPOSE 18080
+
+CMD ["node", "scripts/proxy.mjs"]
+```
+
+**Why Alpine?**
+- Minimal image size (~50MB vs ~900MB for full Node.js)
+- Faster builds and deployments
+- Reduced attack surface
+- The proxy has zero dependencies, so we only need Node.js runtime
+
+## Common deployment commands
+
+### Start the proxy
+
+Start in detached mode (runs in background):
+```bash
+docker compose up -d
+```
+
+Start with logs visible:
+```bash
+docker compose up
+```
+
+Rebuild and start (after code changes):
+```bash
+docker compose up -d --build
+```
+
+### Stop the proxy
+
+Stop the container (can be restarted):
+```bash
+docker compose stop
+```
+
+Stop and remove the container:
+```bash
+docker compose down
+```
+
+### Check status
+
+View running containers:
+```bash
+docker compose ps
+```
+
+Check if the proxy is healthy:
+```bash
+curl http://localhost:18080/health
+```
+
+Expected response:
+```json
+{
+  "status": "ok",
+  "provider": "github-copilot"
+}
+```
+
+### View logs
+
+Follow logs in real-time:
+```bash
+docker logs -f claude-copilot-proxy
+```
+
+View last 100 lines:
+```bash
+docker logs --tail 100 claude-copilot-proxy
+```
+
+View logs with timestamps:
+```bash
+docker logs -t claude-copilot-proxy
+```
+
+## Using Claude Code with Docker proxy
+
+Once the Docker container is running, launch Claude Code with:
+
+```bash
+ANTHROPIC_BASE_URL=http://localhost:18080 ANTHROPIC_API_KEY=copilot-proxy claude
+```
+
+Or use the convenience launcher script:
+```bash
+./scripts/launch.sh
+```
+
+The launch script (scripts/launch.sh:20-49):
+1. Checks if proxy is already running
+2. Starts Docker container if needed
+3. Waits for proxy to be ready
+4. Launches Claude Code with correct environment variables
+
+## Environment variables
+
+You can configure the Docker deployment with environment variables:
+
+### Using a .env file
+
+Create a `.env` file in the project root:
+
+```bash .env
+BRAVE_API_KEY=your_brave_api_key_here
+WEB_SEARCH_MAX_RESULTS=10
+COPILOT_PROXY_PORT=18080
+```
+
+Docker Compose automatically loads this file.
+
+### Passing variables directly
+
+Override variables when starting:
+
+```bash
+BRAVE_API_KEY=your_key docker compose up -d
+```
+
+### Available variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `COPILOT_PROXY_PORT` | `18080` | Port the proxy listens on |
+| `COPILOT_AUTH_FILE` | `~/.claude-copilot-auth.json` | Path to auth token file |
+| `BRAVE_API_KEY` | *(none)* | Brave Search API key for web search |
+| `WEB_SEARCH_MAX_RESULTS` | `5` | Maximum search results per query |
+| `DEBUG_STREAM` | *(none)* | Set to `1` to enable debug logging |
+
+## Custom port deployment
+
+To run the proxy on a different port:
+
+1. **Update docker-compose.yml:**
+
+```yaml
+services:
+  proxy:
+    ports:
+      - "8080:18080"  # Host port 8080, container port 18080
+```
+
+2. **Start the container:**
+
+```bash
+docker compose up -d
+```
+
+3. **Update Claude Code launch:**
+
+```bash
+ANTHROPIC_BASE_URL=http://localhost:8080 ANTHROPIC_API_KEY=copilot-proxy claude
+```
+
+## Custom auth file location
+
+If your auth file is in a different location:
+
+1. **Update the volume mount in docker-compose.yml:**
+
+```yaml
+volumes:
+  - /path/to/your/auth.json:/root/.claude-copilot-auth.json:ro
+```
+
+2. **Or use an environment variable:**
+
+```yaml
+environment:
+  - COPILOT_AUTH_FILE=/custom/path/auth.json
+volumes:
+  - /custom/path/auth.json:/custom/path/auth.json:ro
+```
+
+## Production best practices
+
+### Enable auto-restart
+
+The `restart: always` policy ensures the proxy:
+- Starts automatically on system boot
+- Recovers from crashes
+- Stays running through Docker daemon restarts
+
+<Tip>
+  This is already configured in the provided docker-compose.yml (line 5).
+</Tip>
+
+### Monitor container health
+
+Set up monitoring to check if the proxy is responding:
+
+```bash
+#!/bin/bash
+if ! curl -sf http://localhost:18080/health > /dev/null; then
+  echo "Proxy health check failed!"
+  docker compose restart
+fi
+```
+
+Run this as a cron job every 5 minutes.
+
+### Resource limits
+
+The proxy is lightweight, but you can set resource limits:
+
+```yaml docker-compose.yml
+services:
+  proxy:
+    # ... other config ...
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          memory: 128M
+```
+
+### Secure the auth file
+
+Ensure your auth file has restricted permissions:
+
+```bash
+chmod 600 ~/.claude-copilot-auth.json
+```
+
+The Docker volume mount uses `:ro` (read-only) to prevent the container from modifying it.
+
+## Troubleshooting
+
+### Container won't start
+
+**Check logs:**
+```bash
+docker logs claude-copilot-proxy
+```
+
+**Common issues:**
+- Auth file not found: Run `node scripts/auth.mjs` first
+- Port conflict: Change the host port in docker-compose.yml
+- Permission denied: Check auth file permissions
+
+### Proxy not accessible
+
+**Verify container is running:**
+```bash
+docker compose ps
+```
+
+**Check port mapping:**
+```bash
+docker port claude-copilot-proxy
+```
+
+**Test from inside container:**
+```bash
+docker exec claude-copilot-proxy wget -qO- http://localhost:18080/health
+```
+
+### Container keeps restarting
+
+**View exit code:**
+```bash
+docker compose ps
+```
+
+**Common exit codes:**
+- Exit 1: Auth file error or server startup failure
+- Exit 137: Out of memory (increase memory limit)
+- Exit 143: Graceful shutdown (SIGTERM)
+
+**Check detailed logs:**
+```bash
+docker logs --tail 50 claude-copilot-proxy
+```
+
+## Updating the proxy
+
+When you pull new changes from the repository:
+
+1. **Rebuild the image:**
+```bash
+docker compose build
+```
+
+2. **Restart with new image:**
+```bash
+docker compose up -d
+```
+
+Or combine both steps:
+```bash
+docker compose up -d --build
+```
+
+<Note>
+  The `restart: always` policy ensures the updated container starts automatically.
+</Note>
+
+## Multiple instances
+
+To run multiple proxy instances (e.g., for different auth tokens):
+
+1. **Create separate compose files:**
+
+```yaml docker-compose.dev.yml
+services:
+  proxy-dev:
+    build: .
+    container_name: claude-copilot-proxy-dev
+    restart: always
+    ports:
+      - "18081:18080"
+    volumes:
+      - ~/.claude-copilot-auth-dev.json:/root/.claude-copilot-auth.json:ro
+```
+
+2. **Start with specific compose file:**
+
+```bash
+docker compose -f docker-compose.dev.yml up -d
+```
+
+See the [Advanced configuration](/guides/advanced-configuration) guide for more details on running multiple instances.

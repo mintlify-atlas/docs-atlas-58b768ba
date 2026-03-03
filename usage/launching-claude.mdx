@@ -1,0 +1,297 @@
+---
+title: Launching Claude Code
+description: How to start Claude Code with the GitHub Copilot proxy
+---
+
+Claude Code can be launched using the GitHub Copilot proxy in several ways. The easiest method is using the provided launch script, which automatically handles proxy startup and configuration.
+
+## Using the launch script
+
+The recommended way to start Claude Code is with the `launch.sh` script:
+
+```bash
+./scripts/launch.sh
+```
+
+This script:
+- Checks for authentication credentials
+- Starts the proxy (via Docker if available, otherwise as a background process)
+- Launches Claude Code with the correct environment variables
+- Handles proxy health checks and startup timeouts
+
+### What the launch script does
+
+<Steps>
+  <Step title="Check authentication">
+    The script verifies that `~/.claude-copilot-auth.json` exists. If not, it prompts you to run authentication first:
+    
+    ```bash
+    node scripts/auth.mjs
+    ```
+  </Step>
+  
+  <Step title="Check for running proxy">
+    It checks if a proxy is already running on the configured port by hitting the `/health` endpoint:
+    
+    ```bash
+    curl -s "http://localhost:$PORT/health"
+    ```
+  </Step>
+  
+  <Step title="Start proxy if needed">
+    If no proxy is running, it attempts to start one using Docker first (with `restart: always` for persistence), falling back to a direct Node.js process if Docker is unavailable.
+  </Step>
+  
+  <Step title="Launch Claude Code">
+    Finally, it launches Claude Code with the required environment variables pointing to the local proxy.
+  </Step>
+</Steps>
+
+## Manual launch methods
+
+You can also launch Claude Code manually using different approaches depending on your setup.
+
+<Tabs>
+  <Tab title="Docker (recommended)">
+    Start the proxy as a persistent Docker container:
+    
+    ```bash
+    docker compose up -d
+    ```
+    
+    Then launch Claude Code:
+    
+    ```bash
+    ANTHROPIC_BASE_URL=http://localhost:18080 \
+    ANTHROPIC_API_KEY=copilot-proxy \
+    claude
+    ```
+    
+    <Tip>
+      The Docker container runs with `restart: always`, so it will automatically start on system reboot.
+    </Tip>
+  </Tab>
+  
+  <Tab title="Direct Node.js">
+    Start the proxy directly:
+    
+    ```bash
+    node scripts/proxy.mjs &
+    ```
+    
+    Then launch Claude Code:
+    
+    ```bash
+    ANTHROPIC_BASE_URL=http://localhost:18080 \
+    ANTHROPIC_API_KEY=copilot-proxy \
+    claude
+    ```
+    
+    <Warning>
+      When running the proxy as a background process, you'll need to manually stop it later or it will keep running. The launch script handles cleanup automatically.
+    </Warning>
+  </Tab>
+  
+  <Tab title="With arguments">
+    You can pass arguments to Claude Code through the launch script:
+    
+    ```bash
+    ./scripts/launch.sh --model claude-opus-4-6
+    ```
+    
+    Or manually:
+    
+    ```bash
+    ANTHROPIC_BASE_URL=http://localhost:18080 \
+    ANTHROPIC_API_KEY=copilot-proxy \
+    claude --model claude-opus-4-6
+    ```
+  </Tab>
+</Tabs>
+
+## Environment variables
+
+The following environment variables configure the launch process:
+
+<ParamField path="COPILOT_PROXY_PORT" type="integer" default="18080">
+  The port on which the proxy server runs. Must match between proxy and Claude Code.
+  
+  ```bash
+  COPILOT_PROXY_PORT=18081 ./scripts/launch.sh
+  ```
+</ParamField>
+
+<ParamField path="COPILOT_AUTH_FILE" type="string" default="~/.claude-copilot-auth.json">
+  Path to the saved GitHub Copilot authentication token.
+  
+  ```bash
+  COPILOT_AUTH_FILE=~/custom-auth.json ./scripts/launch.sh
+  ```
+</ParamField>
+
+<ParamField path="ANTHROPIC_BASE_URL" type="string" required>
+  Must be set to the proxy URL (e.g., `http://localhost:18080`) for Claude Code to connect to the proxy.
+</ParamField>
+
+<ParamField path="ANTHROPIC_API_KEY" type="string" required>
+  Must be set to `copilot-proxy` (or any non-empty value). The actual authentication uses the GitHub Copilot token.
+</ParamField>
+
+## Launch scenarios
+
+<AccordionGroup>
+  <Accordion title="First-time setup">
+    ```bash
+    # 1. Authenticate with GitHub Copilot
+    node scripts/auth.mjs
+    
+    # 2. Launch Claude Code
+    ./scripts/launch.sh
+    ```
+    
+    The auth script opens a browser for GitHub device code authentication. Your token is saved for future use.
+  </Accordion>
+  
+  <Accordion title="Daily use">
+    ```bash
+    # Just run the launch script
+    ./scripts/launch.sh
+    ```
+    
+    If you're using Docker, the proxy may already be running from a previous session. The script detects this and skips proxy startup.
+  </Accordion>
+  
+  <Accordion title="Custom port">
+    ```bash
+    # Start proxy on custom port
+    COPILOT_PROXY_PORT=18081 docker compose up -d
+    
+    # Launch Claude Code with matching port
+    ANTHROPIC_BASE_URL=http://localhost:18081 \
+    ANTHROPIC_API_KEY=copilot-proxy \
+    claude
+    ```
+  </Accordion>
+  
+  <Accordion title="Multiple instances">
+    You can run multiple Claude Code instances by using different proxy ports:
+    
+    ```bash
+    # Terminal 1
+    COPILOT_PROXY_PORT=18080 node scripts/proxy.mjs &
+    ANTHROPIC_BASE_URL=http://localhost:18080 ANTHROPIC_API_KEY=copilot-proxy claude
+    
+    # Terminal 2
+    COPILOT_PROXY_PORT=18081 node scripts/proxy.mjs &
+    ANTHROPIC_BASE_URL=http://localhost:18081 ANTHROPIC_API_KEY=copilot-proxy claude
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Health checks
+
+The proxy provides a `/health` endpoint that returns the server status:
+
+```bash
+curl http://localhost:18080/health
+```
+
+<CodeGroup>
+```json Success response
+{
+  "status": "ok",
+  "provider": "github-copilot"
+}
+```
+</CodeGroup>
+
+The launch script uses this endpoint to verify the proxy is running before starting Claude Code:
+
+```bash
+# Wait for proxy to be ready (from launch.sh:30-36)
+for i in $(seq 1 30); do
+    if curl -s "http://localhost:$PORT/health" > /dev/null 2>&1; then
+        break
+    fi
+    sleep 0.5
+done
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Authentication error">
+    If you see authentication errors:
+    
+    ```bash
+    ✗ Not authenticated. Run authentication first:
+      node scripts/auth.mjs
+    ```
+    
+    Your GitHub Copilot token may have expired. Re-run the auth script:
+    
+    ```bash
+    rm ~/.claude-copilot-auth.json
+    node scripts/auth.mjs
+    ```
+  </Accordion>
+  
+  <Accordion title="Port already in use">
+    If the proxy port is already occupied:
+    
+    ```bash
+    # Find and kill the process using port 18080
+    lsof -ti:18080 | xargs kill -9
+    
+    # Or use a different port
+    COPILOT_PROXY_PORT=18081 ./scripts/launch.sh
+    ```
+  </Accordion>
+  
+  <Accordion title="Proxy fails to start">
+    If the proxy fails to start in Docker, the launch script automatically falls back to Node.js:
+    
+    ```bash
+    ✗ Docker proxy failed to start, falling back to node...
+    ```
+    
+    Check Docker status:
+    
+    ```bash
+    docker info
+    ```
+  </Accordion>
+  
+  <Accordion title="Connection refused">
+    If Claude Code can't connect to the proxy:
+    
+    1. Verify the proxy is running:
+       ```bash
+       curl http://localhost:18080/health
+       ```
+    
+    2. Check environment variables are set:
+       ```bash
+       echo $ANTHROPIC_BASE_URL
+       echo $ANTHROPIC_API_KEY
+       ```
+    
+    3. Ensure the port matches:
+       ```bash
+       # Both should use the same port
+       COPILOT_PROXY_PORT=18080
+       ANTHROPIC_BASE_URL=http://localhost:18080
+       ```
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Web search" icon="magnifying-glass" href="/usage/web-search">
+    Configure web search functionality
+  </Card>
+  <Card title="Model selection" icon="brain" href="/usage/model-selection">
+    Switch between available Claude models
+  </Card>
+</CardGroup>

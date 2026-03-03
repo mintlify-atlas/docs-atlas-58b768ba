@@ -1,0 +1,388 @@
+---
+title: Launch script
+description: Automated startup script for proxy server and Claude Code
+---
+
+## Overview
+
+The launch script automates the startup process by ensuring the proxy server is running (via Docker or Node.js) and then starting Claude Code with the correct environment variables.
+
+## Command
+
+```bash
+bash scripts/launch.sh [claude-code-args...]
+```
+
+Any arguments passed to the launch script are forwarded to Claude Code.
+
+## Startup logic
+
+The script follows this decision flow:
+
+```bash
+#!/usr/bin/env bash
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PORT="${COPILOT_PROXY_PORT:-18080}"
+AUTH_FILE="${COPILOT_AUTH_FILE:-$HOME/.claude-copilot-auth.json}"
+```
+
+### Authentication check
+
+```bash
+if [ ! -f "$AUTH_FILE" ]; then
+    echo "✗ Not authenticated. Run authentication first:"
+    echo "  node $SCRIPT_DIR/auth.mjs"
+    exit 1
+fi
+```
+
+**Error handling:** Exits with code 1 if no auth file exists, directing user to authenticate first
+
+### Proxy detection
+
+```bash
+if curl -s "http://localhost:$PORT/health" > /dev/null 2>&1; then
+    echo "✓ Proxy already running on port $PORT"
+else
+    # Start proxy...
+fi
+```
+
+**Health check:** Uses `/health` endpoint to detect running proxy instances
+
+## Docker vs Node.js fallback
+
+The script prioritizes Docker but falls back to Node.js if Docker is unavailable:
+
+### Docker path
+
+```bash
+if command -v docker &> /dev/null && docker info &> /dev/null 2>&1; then
+    echo "Starting proxy via Docker (restart: always)..."
+    cd "$PROJECT_DIR"
+    docker-compose up -d --build 2>/dev/null || docker compose up -d --build
+    
+    # Wait for proxy to be ready
+    for i in $(seq 1 30); do
+        if curl -s "http://localhost:$PORT/health" > /dev/null 2>&1; then
+            break
+        fi
+        sleep 0.5
+    done
+
+    if ! curl -s "http://localhost:$PORT/health" > /dev/null 2>&1; then
+        echo "✗ Docker proxy failed to start, falling back to node..."
+        node "$SCRIPT_DIR/proxy.mjs" &
+        PROXY_PID=$!
+        # ... wait and verify
+        trap "kill $PROXY_PID 2>/dev/null" EXIT
+    else
+        echo "✓ Proxy running in Docker (auto-restarts on reboot)"
+    fi
+else
+    # ... Node.js path
+fi
+```
+
+**Benefits of Docker:**
+- Persistent background process
+- Auto-restart on system reboot
+- Clean process isolation
+
+**Fallback to Node.js:**
+- No Docker installation required
+- Started as background process
+- Cleaned up on script exit
+
+### Node.js path
+
+```bash
+echo "Starting proxy server (no Docker found)..."
+node "$SCRIPT_DIR/proxy.mjs" &
+PROXY_PID=$!
+
+for i in $(seq 1 30); do
+    if curl -s "http://localhost:$PORT/health" > /dev/null 2>&1; then break; fi
+    sleep 0.2
+done
+
+if ! curl -s "http://localhost:$PORT/health" > /dev/null 2>&1; then
+    echo "✗ Proxy failed to start"
+    kill $PROXY_PID 2>/dev/null
+    exit 1
+fi
+
+echo "✓ Proxy started (PID: $PROXY_PID)"
+trap "echo 'Stopping proxy...'; kill $PROXY_PID 2>/dev/null" EXIT
+```
+
+**Process management:**
+- Background process with captured PID
+- Automatic cleanup on script exit via `trap`
+- Verification via health check polling
+
+## Health check polling
+
+The script polls the `/health` endpoint to verify successful startup:
+
+```bash
+for i in $(seq 1 30); do
+    if curl -s "http://localhost:$PORT/health" > /dev/null 2>&1; then
+        break
+    fi
+    sleep 0.5
+done
+```
+
+**Parameters:**
+- Maximum attempts: 30
+- Poll interval: 0.5 seconds (Docker) or 0.2 seconds (Node.js)
+- Total timeout: ~15 seconds (Docker) or ~6 seconds (Node.js)
+
+**Verification:**
+```bash
+if ! curl -s "http://localhost:$PORT/health" > /dev/null 2>&1; then
+    echo "✗ Proxy failed to start"
+    exit 1
+fi
+```
+
+## Environment variable handling
+
+### Configuration variables
+
+<ParamField path="COPILOT_PROXY_PORT" type="number" default="18080">
+  Port for proxy server
+  
+  ```bash
+  COPILOT_PROXY_PORT=8080 bash scripts/launch.sh
+  ```
+</ParamField>
+
+<ParamField path="COPILOT_AUTH_FILE" type="string" default="~/.claude-copilot-auth.json">
+  Authentication file location
+  
+  ```bash
+  COPILOT_AUTH_FILE=/custom/auth.json bash scripts/launch.sh
+  ```
+</ParamField>
+
+### Claude Code variables
+
+The script sets these environment variables for Claude Code:
+
+```bash
+ANTHROPIC_BASE_URL="http://localhost:$PORT" \
+ANTHROPIC_API_KEY="copilot-proxy" \
+claude "$@"
+```
+
+<ParamField path="ANTHROPIC_BASE_URL" type="string">
+  Base URL for Anthropic API requests (points to local proxy)
+</ParamField>
+
+<ParamField path="ANTHROPIC_API_KEY" type="string">
+  API key value (can be any non-empty string)
+</ParamField>
+
+## Path resolution
+
+The script dynamically resolves paths to work from any directory:
+
+```bash
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+```
+
+**Variables:**
+- `SCRIPT_DIR`: Absolute path to scripts directory
+- `PROJECT_DIR`: Absolute path to project root
+- `BASH_SOURCE[0]`: Path to the script itself
+
+**Usage:**
+```bash
+# Works from any directory
+cd /tmp
+/path/to/claude-code-copilot/scripts/launch.sh
+
+# Also works
+cd /path/to/claude-code-copilot
+./scripts/launch.sh
+```
+
+## Error handling
+
+### Missing authentication
+
+```bash
+if [ ! -f "$AUTH_FILE" ]; then
+    echo "✗ Not authenticated. Run authentication first:"
+    echo "  node $SCRIPT_DIR/auth.mjs"
+    exit 1
+fi
+```
+
+**Exit code:** 1
+
+**User guidance:** Provides exact command to run for authentication
+
+### Proxy startup failure
+
+```bash
+if ! curl -s "http://localhost:$PORT/health" > /dev/null 2>&1; then
+    echo "✗ Proxy failed to start"
+    kill $PROXY_PID 2>/dev/null
+    exit 1
+fi
+```
+
+**Exit code:** 1
+
+**Cleanup:** Kills background process before exiting
+
+### Docker fallback
+
+```bash
+if ! curl -s "http://localhost:$PORT/health" > /dev/null 2>&1; then
+    echo "✗ Docker proxy failed to start, falling back to node..."
+    node "$SCRIPT_DIR/proxy.mjs" &
+    PROXY_PID=$!
+    # ... continue with Node.js path
+fi
+```
+
+**Behavior:** Automatically tries Node.js if Docker fails, ensuring maximum reliability
+
+## Process cleanup
+
+When running in Node.js mode, the script ensures cleanup on exit:
+
+```bash
+trap "echo 'Stopping proxy...'; kill $PROXY_PID 2>/dev/null" EXIT
+```
+
+**Trap signal:** `EXIT` - Triggered on script termination (normal or error)
+
+**Cleanup actions:**
+1. Print status message
+2. Kill proxy process
+3. Suppress error if process already exited
+
+**Note:** Docker containers are not cleaned up on exit since they're configured with `restart: always` for persistence
+
+## Usage examples
+
+### Basic usage
+
+```bash
+bash scripts/launch.sh
+```
+
+Starts proxy and launches Claude Code with default settings.
+
+### Pass arguments to Claude Code
+
+```bash
+bash scripts/launch.sh --help
+bash scripts/launch.sh chat
+bash scripts/launch.sh --model claude-opus-4-6
+```
+
+All arguments are forwarded via `"$@"`.
+
+### Custom port
+
+```bash
+COPILOT_PROXY_PORT=8080 bash scripts/launch.sh
+```
+
+### Custom auth file
+
+```bash
+COPILOT_AUTH_FILE=~/.my-auth.json bash scripts/launch.sh
+```
+
+## Example output
+
+### Docker path
+
+```
+✓ Proxy already running on port 18080
+Starting Claude Code via Copilot...
+
+[Claude Code starts...]
+```
+
+### Node.js path (first run)
+
+```
+Starting proxy server (no Docker found)...
+✓ Proxy started (PID: 12345)
+Starting Claude Code via Copilot...
+
+[Claude Code starts...]
+^C
+Stopping proxy...
+```
+
+### Authentication error
+
+```
+✗ Not authenticated. Run authentication first:
+  node /path/to/scripts/auth.mjs
+```
+
+## Integration with Docker Compose
+
+When Docker is available, the script uses Docker Compose:
+
+```bash
+docker-compose up -d --build 2>/dev/null || docker compose up -d --build
+```
+
+**Compatibility:** Tries both `docker-compose` (older) and `docker compose` (newer) commands
+
+**Flags:**
+- `-d`: Detached mode (background)
+- `--build`: Rebuild image if needed
+
+**Benefits:**
+- Container persists after script exits
+- Automatic restart on system reboot
+- Consistent environment
+
+## Dependencies
+
+The script requires these commands to be available:
+
+<ParamField path="bash" type="command" required>
+  Shell interpreter
+</ParamField>
+
+<ParamField path="curl" type="command" required>
+  HTTP client for health checks
+</ParamField>
+
+<ParamField path="node" type="command" required>
+  Node.js runtime for proxy server
+</ParamField>
+
+<ParamField path="docker" type="command" optional>
+  Container runtime (falls back to Node.js if unavailable)
+</ParamField>
+
+<ParamField path="claude" type="command" required>
+  Claude Code CLI
+</ParamField>
+
+## Exit codes
+
+| Code | Meaning |
+|------|----------|
+| 0 | Success (Claude Code exited normally) |
+| 1 | Authentication missing or proxy startup failed |
+| Other | Propagated from Claude Code exit status |

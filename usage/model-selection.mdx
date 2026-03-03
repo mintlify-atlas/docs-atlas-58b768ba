@@ -1,0 +1,407 @@
+---
+title: Model selection
+description: Available Claude models and how to switch between them via GitHub Copilot
+---
+
+The proxy maps Anthropic model names to GitHub Copilot's available models, allowing you to use different Claude model tiers through your Copilot subscription.
+
+## Available models
+
+The proxy supports all current Claude model families. Here's the complete mapping from the proxy source:
+
+<Tabs>
+  <Tab title="Claude Opus 4.6">
+    The latest and most capable Opus model.
+    
+    **Supported aliases:**
+    - `claude-opus-4-6`
+    - `claude-opus-4-6-20260214`
+    - `claude-opus-4-6-latest`
+    
+    **Maps to:** `claude-opus-4.6`
+    
+    ```bash
+    # Launch with Opus 4.6
+    ./scripts/launch.sh --model claude-opus-4-6
+    ```
+    
+    <Info>
+      All three aliases map to the same underlying model. Use whichever naming convention you prefer.
+    </Info>
+  </Tab>
+  
+  <Tab title="Claude Sonnet 4.5">
+    Latest Sonnet model with enhanced capabilities.
+    
+    **Supported aliases:**
+    - `claude-sonnet-4-5`
+    - `claude-sonnet-4-5-20250929`
+    - `claude-sonnet-4-5-latest`
+    
+    **Maps to:** `claude-sonnet-4.5`
+    
+    ```bash
+    # Launch with Sonnet 4.5
+    ./scripts/launch.sh --model claude-sonnet-4-5
+    ```
+  </Tab>
+  
+  <Tab title="Claude Sonnet 4">
+    Previous generation Sonnet model.
+    
+    **Supported aliases:**
+    - `claude-sonnet-4`
+    - `claude-sonnet-4-20250514`
+    - `claude-3-5-sonnet-20241022`
+    - `claude-3-5-sonnet-latest`
+    
+    **Maps to:** `claude-sonnet-4`
+    
+    ```bash
+    # Launch with Sonnet 4
+    ./scripts/launch.sh --model claude-sonnet-4
+    ```
+    
+    <Tip>
+      The `claude-3-5-sonnet-*` aliases are maintained for backward compatibility.
+    </Tip>
+  </Tab>
+  
+  <Tab title="Claude Opus 4.5">
+    Previous Opus generation.
+    
+    **Supported aliases:**
+    - `claude-opus-4-5`
+    - `claude-opus-4-5-20251101`
+    - `claude-opus-4-5-latest`
+    - `claude-opus-4-20250918` (legacy)
+    - `claude-3-opus-20240229` (legacy)
+    - `claude-3-5-opus-latest` (legacy)
+    
+    **Maps to:** `claude-opus-4.5`
+    
+    ```bash
+    # Launch with Opus 4.5
+    ./scripts/launch.sh --model claude-opus-4-5
+    ```
+  </Tab>
+  
+  <Tab title="Claude Opus 4.1">
+    Alternative Opus variant.
+    
+    **Supported aliases:**
+    - `claude-opus-4-1`
+    - `claude-opus-4-1-latest`
+    
+    **Maps to:** `claude-opus-41`
+    
+    ```bash
+    # Launch with Opus 4.1
+    ./scripts/launch.sh --model claude-opus-4-1
+    ```
+  </Tab>
+  
+  <Tab title="Claude Haiku 4.5">
+    Fast, efficient model for lighter tasks.
+    
+    **Supported aliases:**
+    - `claude-haiku-4-5`
+    - `claude-haiku-4-5-20251001`
+    - `claude-haiku-4-5-latest`
+    - `claude-haiku-4-20250414`
+    - `claude-3-5-haiku-20241022` (legacy)
+    - `claude-3-haiku-20240307` (legacy)
+    
+    **Maps to:** `claude-haiku-4.5`
+    
+    ```bash
+    # Launch with Haiku 4.5
+    ./scripts/launch.sh --model claude-haiku-4-5
+    ```
+    
+    <Tip>
+      Haiku is great for tasks that don't require the full capabilities of Opus or Sonnet, with faster response times.
+    </Tip>
+  </Tab>
+</Tabs>
+
+## Model mapping implementation
+
+The proxy uses a comprehensive mapping table to translate model names:
+
+```javascript
+const MODEL_MAP = {
+  // Opus 4.6
+  "claude-opus-4-6": "claude-opus-4.6",
+  "claude-opus-4-6-20260214": "claude-opus-4.6",
+  "claude-opus-4-6-latest": "claude-opus-4.6",
+  // Sonnet 4.5
+  "claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
+  "claude-sonnet-4-5": "claude-sonnet-4.5",
+  "claude-sonnet-4-5-latest": "claude-sonnet-4.5",
+  // Sonnet 4
+  "claude-sonnet-4-20250514": "claude-sonnet-4",
+  "claude-sonnet-4": "claude-sonnet-4",
+  "claude-3-5-sonnet-20241022": "claude-sonnet-4",
+  "claude-3-5-sonnet-latest": "claude-sonnet-4",
+  // ... and more
+}
+```
+
+### Intelligent fallback mapping
+
+For unknown model names, the proxy uses pattern matching:
+
+```javascript
+function mapModel(anthropicModel) {
+  if (MODEL_MAP[anthropicModel]) return MODEL_MAP[anthropicModel]
+
+  // Try pattern matching for unknown dated versions
+  const m = anthropicModel.toLowerCase()
+  if (m.includes("opus") && (m.includes("4.6") || m.includes("4-6"))) return "claude-opus-4.6"
+  if (m.includes("sonnet") && (m.includes("4.5") || m.includes("4-5"))) return "claude-sonnet-4.5"
+  if (m.includes("sonnet")) return "claude-sonnet-4"
+  if (m.includes("opus") && (m.includes("4.5") || m.includes("4-5"))) return "claude-opus-4.5"
+  if (m.includes("opus") && (m.includes("4.1") || m.includes("4-1"))) return "claude-opus-41"
+  if (m.includes("haiku")) return "claude-haiku-4.5"
+  if (m.includes("opus")) return "claude-opus-4.6"
+
+  // Pass through as-is
+  return anthropicModel
+}
+```
+
+<Info>
+  This intelligent mapping means you can use almost any Claude model name format, and the proxy will find the best match.
+</Info>
+
+## Switching models
+
+<Tabs>
+  <Tab title="Using /model command">
+    Within Claude Code, use the `/model` command to switch models interactively:
+    
+    ```bash
+    # Inside Claude Code session
+    /model claude-opus-4-6
+    ```
+    
+    This changes the model for the current session without restarting.
+    
+    <Tip>
+      The `/model` command is the fastest way to try different models during a session.
+    </Tip>
+  </Tab>
+  
+  <Tab title="Command-line argument">
+    Specify the model when launching Claude Code:
+    
+    ```bash
+    # Using launch script
+    ./scripts/launch.sh --model claude-sonnet-4-5
+    
+    # Manual launch
+    ANTHROPIC_BASE_URL=http://localhost:18080 \
+    ANTHROPIC_API_KEY=copilot-proxy \
+    claude --model claude-sonnet-4-5
+    ```
+  </Tab>
+  
+  <Tab title="Configuration file">
+    Set a default model in your Claude Code configuration:
+    
+    ```json
+    {
+      "model": "claude-opus-4-6"
+    }
+    ```
+    
+    See the [Claude Code documentation](https://docs.anthropic.com/en/docs/claude-code) for configuration file location.
+  </Tab>
+</Tabs>
+
+## Checking available models
+
+Query the proxy's `/models` endpoint to see all available models:
+
+```bash
+curl http://localhost:18080/v1/models
+```
+
+<CodeGroup>
+```json Response
+{
+  "data": [
+    { "id": "claude-opus-4-6", "object": "model" },
+    { "id": "claude-sonnet-4-5-20250929", "object": "model" },
+    { "id": "claude-sonnet-4-20250514", "object": "model" },
+    { "id": "claude-opus-4-5-20251101", "object": "model" },
+    { "id": "claude-haiku-4-5", "object": "model" }
+  ]
+}
+```
+</CodeGroup>
+
+This endpoint is called by Claude Code when it starts up to discover available models.
+
+## Model selection strategies
+
+<CardGroup cols={2}>
+  <Card title="For complex reasoning" icon="brain">
+    **Use: Claude Opus 4.6**
+    
+    Best for:
+    - Complex code refactoring
+    - Architecture decisions
+    - Debugging difficult issues
+    - Writing comprehensive documentation
+  </Card>
+  
+  <Card title="For balanced performance" icon="balance-scale">
+    **Use: Claude Sonnet 4.5**
+    
+    Best for:
+    - General development tasks
+    - Code reviews
+    - Writing tests
+    - Day-to-day coding assistance
+  </Card>
+  
+  <Card title="For quick tasks" icon="bolt">
+    **Use: Claude Haiku 4.5**
+    
+    Best for:
+    - Simple code generation
+    - Quick questions
+    - Syntax help
+    - Fast iterations
+  </Card>
+  
+  <Card title="For specific capabilities" icon="stars">
+    **Use: Sonnet 4.5 or Opus 4.5**
+    
+    Best for:
+    - Testing model variations
+    - Comparing outputs
+    - Fallback options
+  </Card>
+</CardGroup>
+
+## Request logging
+
+The proxy logs every model mapping for transparency:
+
+```bash
+→ claude-sonnet-4-5-20250929 → claude-sonnet-4.5 | stream | 3 messages
+```
+
+This shows:
+- **Left side:** Model name from Claude Code
+- **Arrow:** Indicates mapping
+- **Right side:** Actual model sent to GitHub Copilot
+- **Additional info:** Streaming mode and message count
+
+<Tip>
+  Watch these logs to verify your model selection is working correctly.
+</Tip>
+
+## Legacy model support
+
+The proxy maintains backward compatibility with Claude 3 naming conventions:
+
+<AccordionGroup>
+  <Accordion title="Claude 3 Opus">
+    ```javascript
+    "claude-3-opus-20240229": "claude-opus-4.5"
+    "claude-3-5-opus-latest": "claude-opus-4.5"
+    ```
+    
+    Maps to Claude Opus 4.5 for compatibility.
+  </Accordion>
+  
+  <Accordion title="Claude 3.5 Sonnet">
+    ```javascript
+    "claude-3-5-sonnet-20241022": "claude-sonnet-4"
+    "claude-3-5-sonnet-latest": "claude-sonnet-4"
+    ```
+    
+    Maps to Claude Sonnet 4.
+  </Accordion>
+  
+  <Accordion title="Claude 3.5 Haiku">
+    ```javascript
+    "claude-3-5-haiku-20241022": "claude-haiku-4.5"
+    "claude-3-haiku-20240307": "claude-haiku-4.5"
+    ```
+    
+    Maps to Claude Haiku 4.5.
+  </Accordion>
+</AccordionGroup>
+
+<Info>
+  Using legacy model names ensures existing scripts and configurations continue to work without modification.
+</Info>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Model not recognized">
+    If you use an unknown model name, the proxy will:
+    
+    1. Check the MODEL_MAP
+    2. Try pattern matching
+    3. Pass the name through as-is
+    
+    Check the proxy logs to see how your model name was mapped:
+    
+    ```bash
+    → your-model-name → claude-opus-4.6 | stream | 2 messages
+    ```
+  </Accordion>
+  
+  <Accordion title="Model errors from Copilot">
+    If Copilot rejects the model name:
+    
+    ```bash
+    ✗ Copilot API error: 400 {"error": "model not found"}
+    ```
+    
+    This means GitHub Copilot doesn't support that model. Try a different model from the available list.
+  </Accordion>
+  
+  <Accordion title="Inconsistent model behavior">
+    Remember that models are served by GitHub Copilot, not Anthropic. Behavior may differ slightly from the official Anthropic API.
+    
+    If you notice issues:
+    1. Try a different model variant
+    2. Check GitHub Copilot's status page
+    3. Verify your Copilot subscription is active
+  </Accordion>
+</AccordionGroup>
+
+## Performance comparison
+
+Different models have different characteristics:
+
+| Model | Speed | Quality | Best for |
+|-------|-------|---------|----------|
+| Claude Opus 4.6 | Slower | Highest | Complex reasoning, architecture |
+| Claude Sonnet 4.5 | Fast | High | General development tasks |
+| Claude Sonnet 4 | Fast | High | Daily coding work |
+| Claude Opus 4.5 | Medium | Very High | Advanced tasks |
+| Claude Haiku 4.5 | Fastest | Good | Simple tasks, quick questions |
+
+<Tip>
+  Start with Sonnet 4.5 for most tasks, then switch to Opus 4.6 when you need deeper reasoning or to Haiku 4.5 when you need speed.
+</Tip>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Web search" icon="magnifying-glass" href="/usage/web-search">
+    Enable web search for any model
+  </Card>
+  <Card title="Launching Claude" icon="rocket" href="/usage/launching-claude">
+    Learn different launch methods
+  </Card>
+</CardGroup>

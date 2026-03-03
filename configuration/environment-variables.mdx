@@ -1,0 +1,178 @@
+---
+title: Environment variables
+description: Configure the Claude Code Copilot proxy using environment variables
+---
+
+The Claude Code Copilot proxy is configured through environment variables. These variables control the server port, authentication, web search providers, and other behavior.
+
+## Server configuration
+
+<ParamField path="COPILOT_PROXY_PORT" type="integer" default="18080">
+  The port on which the proxy server listens for incoming requests.
+
+  <CodeGroup>
+  ```bash Default
+  # Server runs on http://localhost:18080
+  node scripts/proxy.mjs
+  ```
+
+  ```bash Custom port
+  COPILOT_PROXY_PORT=3000 node scripts/proxy.mjs
+  ```
+  </CodeGroup>
+
+  Source: `scripts/proxy.mjs:18`
+</ParamField>
+
+<ParamField path="COPILOT_AUTH_FILE" type="string" default="~/.claude-copilot-auth.json">
+  Path to the authentication file containing your GitHub Copilot access token.
+
+  The auth file is created when you run `node scripts/auth.mjs` and contains:
+  - `access_token` - Your GitHub OAuth token
+  - `provider` - Always "github-copilot"
+  - `github_user` - Your GitHub username
+  - `created_at` - Timestamp of authentication
+
+  <CodeGroup>
+  ```bash Default location
+  # Uses ~/.claude-copilot-auth.json
+  node scripts/proxy.mjs
+  ```
+
+  ```bash Custom location
+  COPILOT_AUTH_FILE=/path/to/auth.json node scripts/proxy.mjs
+  ```
+  </CodeGroup>
+
+  Source: `scripts/proxy.mjs:19-20`, `scripts/auth.mjs:18-19`
+</ParamField>
+
+## Web search configuration
+
+<ParamField path="BRAVE_API_KEY" type="string" default="">
+  API key for Brave Search integration. When provided, the proxy uses Brave Search as the primary web search provider.
+
+  **Getting a Brave API key:**
+  1. Visit [https://api.search.brave.com/](https://api.search.brave.com/)
+  2. Sign up for a free account
+  3. Create an API key from your dashboard
+  4. Add it to your environment
+
+  <CodeGroup>
+  ```bash Set API key
+  export BRAVE_API_KEY="your-api-key-here"
+  node scripts/proxy.mjs
+  ```
+
+  ```bash Without Brave (uses DuckDuckGo)
+  # Falls back to DuckDuckGo Lite
+  node scripts/proxy.mjs
+  ```
+  </CodeGroup>
+
+  When `BRAVE_API_KEY` is set:
+  - Primary: Brave Search API
+  - Fallback: DuckDuckGo Lite → DuckDuckGo Instant Answer API
+
+  Source: `scripts/proxy.mjs:23`
+</ParamField>
+
+<ParamField path="WEB_SEARCH_MAX_RESULTS" type="integer" default="5">
+  Maximum number of search results to return per web search query.
+
+  <CodeGroup>
+  ```bash Default (5 results)
+  node scripts/proxy.mjs
+  ```
+
+  ```bash More results
+  WEB_SEARCH_MAX_RESULTS=10 node scripts/proxy.mjs
+  ```
+  </CodeGroup>
+
+  This limit applies to all search providers (Brave, DuckDuckGo Lite, DuckDuckGo Instant Answer).
+
+  Source: `scripts/proxy.mjs:24`
+</ParamField>
+
+## Claude Code integration
+
+<ParamField path="ANTHROPIC_BASE_URL" type="string" required>
+  Points Claude Code to use the proxy server instead of Anthropic's API.
+
+  ```bash
+  ANTHROPIC_BASE_URL=http://localhost:18080
+  ```
+
+  If you changed `COPILOT_PROXY_PORT`, update this URL accordingly:
+  ```bash
+  COPILOT_PROXY_PORT=3000 node scripts/proxy.mjs
+  # Then use:
+  ANTHROPIC_BASE_URL=http://localhost:3000
+  ```
+</ParamField>
+
+<ParamField path="ANTHROPIC_API_KEY" type="string" required>
+  When using the proxy, set this to any non-empty value. The actual authentication is handled by your GitHub Copilot token.
+
+  ```bash
+  ANTHROPIC_API_KEY=copilot-proxy
+  ```
+
+  The proxy ignores this value and uses `COPILOT_AUTH_FILE` for authentication.
+</ParamField>
+
+## Complete example
+
+<CodeGroup>
+```bash Basic usage
+# Start the proxy
+node scripts/proxy.mjs
+
+# In another terminal, run Claude Code
+export ANTHROPIC_BASE_URL=http://localhost:18080
+export ANTHROPIC_API_KEY=copilot-proxy
+claude
+```
+
+```bash With Brave Search
+# Start the proxy with Brave Search
+export BRAVE_API_KEY="your-api-key"
+export WEB_SEARCH_MAX_RESULTS=10
+node scripts/proxy.mjs
+
+# Run Claude Code
+export ANTHROPIC_BASE_URL=http://localhost:18080
+export ANTHROPIC_API_KEY=copilot-proxy
+claude
+```
+
+```bash Custom configuration
+# Custom port and auth file location
+export COPILOT_PROXY_PORT=3000
+export COPILOT_AUTH_FILE=/custom/path/auth.json
+export BRAVE_API_KEY="your-api-key"
+node scripts/proxy.mjs
+
+# Run Claude Code with custom port
+export ANTHROPIC_BASE_URL=http://localhost:3000
+export ANTHROPIC_API_KEY=copilot-proxy
+claude
+```
+</CodeGroup>
+
+## Docker environment
+
+When running with Docker Compose, set these variables in a `.env` file:
+
+```bash .env
+BRAVE_API_KEY=your-api-key-here
+WEB_SEARCH_MAX_RESULTS=5
+```
+
+The Docker container automatically:
+- Exposes port 18080 (configurable in `docker-compose.yml`)
+- Mounts `~/.claude-copilot-auth.json` as read-only
+- Sets `COPILOT_PROXY_PORT=18080`
+
+Source: `docker-compose.yml:10-13`

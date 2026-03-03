@@ -1,0 +1,170 @@
+---
+title: Installation
+description: Install and configure Claude Code Copilot to use Claude Code through your GitHub Copilot subscription
+---
+
+## Prerequisites
+
+Before installing Claude Code Copilot, ensure you have the following:
+
+<CardGroup cols={2}>
+  <Card title="GitHub Copilot subscription" icon="github">
+    Active Copilot subscription (Individual, Business, or Enterprise)
+  </Card>
+  <Card title="Node.js 18+" icon="node-js">
+    Runtime environment for the proxy server
+  </Card>
+  <Card title="Claude Code CLI" icon="terminal">
+    Anthropic's official CLI tool
+  </Card>
+  <Card title="Docker (optional)" icon="docker">
+    For running the proxy as a persistent container
+  </Card>
+</CardGroup>
+
+<Note>
+  **No Anthropic API key needed** — This proxy uses your existing GitHub Copilot subscription to access Claude models.
+</Note>
+
+## System requirements
+
+- **Operating system:** macOS, Linux, or Windows (with WSL recommended)
+- **Memory:** Minimum 512MB RAM for the proxy server
+- **Network:** Internet connection for GitHub authentication and Copilot API access
+- **Port availability:** Port 18080 (default) must be available
+
+## Installation steps
+
+<Steps>
+  <Step title="Install Node.js">
+    Download and install Node.js 18 or later from [nodejs.org](https://nodejs.org/)
+
+    Verify the installation:
+    ```bash
+    node --version
+    # Should output v18.0.0 or higher
+    ```
+  </Step>
+
+  <Step title="Install Claude Code CLI">
+    Install Anthropic's official Claude Code command-line tool globally:
+
+    ```bash
+    npm install -g @anthropic-ai/claude-code
+    ```
+
+    Verify the installation:
+    ```bash
+    claude --version
+    ```
+  </Step>
+
+  <Step title="Clone the repository">
+    Clone the Claude Code Copilot repository to your local machine:
+
+    ```bash
+    git clone https://github.com/samarth777/claude-code-copilot.git
+    cd claude-code-copilot
+    ```
+  </Step>
+
+  <Step title="Authenticate with GitHub">
+    Run the authentication script to connect your GitHub Copilot account:
+
+    ```bash
+    node scripts/auth.mjs
+    ```
+
+    This will open a browser window for GitHub OAuth authentication. See the [Authentication](/setup/authentication) guide for detailed instructions.
+  </Step>
+
+  <Step title="Start the proxy server">
+    Use the convenient launch script to start everything:
+
+    ```bash
+    ./scripts/launch.sh
+    ```
+
+    Or manually start the proxy and Claude Code:
+
+    <CodeGroup>
+      ```bash Docker
+      docker compose up -d
+      ANTHROPIC_BASE_URL=http://localhost:18080 ANTHROPIC_API_KEY=copilot-proxy claude
+      ```
+
+      ```bash Node.js
+      node scripts/proxy.mjs &
+      ANTHROPIC_BASE_URL=http://localhost:18080 ANTHROPIC_API_KEY=copilot-proxy claude
+      ```
+    </CodeGroup>
+  </Step>
+</Steps>
+
+## Verification
+
+Once installation is complete, verify that everything is working:
+
+1. **Check proxy server status:**
+   ```bash
+   curl http://localhost:18080/health
+   ```
+
+2. **Launch Claude Code:**
+   ```bash
+   ANTHROPIC_BASE_URL=http://localhost:18080 ANTHROPIC_API_KEY=copilot-proxy claude
+   ```
+
+3. **Select a model:**
+   Inside Claude Code, type `/model` to see available Claude models
+
+<Check>
+  If you see the model selection menu, your installation is successful!
+</Check>
+
+## Environment variables
+
+You can customize the proxy behavior with these environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `COPILOT_PROXY_PORT` | `18080` | Port for the local proxy server |
+| `COPILOT_AUTH_FILE` | `~/.claude-copilot-auth.json` | Path to saved OAuth token |
+| `BRAVE_API_KEY` | *(none)* | Brave Search API key for enhanced web search |
+| `WEB_SEARCH_MAX_RESULTS` | `5` | Maximum search results per query |
+
+<Tip>
+  Set environment variables before starting the proxy to customize its behavior.
+</Tip>
+
+## NPM scripts
+
+The project includes convenient npm scripts for common tasks:
+
+```json package.json
+{
+  "scripts": {
+    "auth": "node scripts/auth.mjs",
+    "proxy": "node scripts/proxy.mjs",
+    "start": "bash scripts/launch.sh"
+  }
+}
+```
+
+Run them with:
+```bash
+npm run auth    # Authenticate with GitHub
+npm run proxy   # Start proxy server
+npm start       # Launch proxy + Claude Code
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Authentication" icon="key" href="/setup/authentication">
+    Learn about the GitHub OAuth flow and credential storage
+  </Card>
+  <Card title="Docker setup" icon="docker" href="/setup/docker">
+    Run the proxy as a persistent Docker container
+  </Card>
+</CardGroup>

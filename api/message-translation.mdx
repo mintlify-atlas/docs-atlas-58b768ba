@@ -1,0 +1,634 @@
+---
+title: Message translation
+description: Learn how messages are translated between Anthropic and OpenAI formats
+---
+
+The proxy translates between Anthropic's Messages API format and OpenAI's Chat Completions format. This includes message content, tool calls, streaming events, and more.
+
+## Format overview
+
+### Anthropic Messages API
+
+Anthropic's format uses:
+- Separate `system` parameter for system messages
+- `content` arrays with typed blocks (`text`, `image`, `tool_use`, `tool_result`)
+- Rich tool calling with `tool_use` and `tool_result` blocks
+- Streaming via Server-Sent Events with typed events
+
+### OpenAI Chat Completions
+
+OpenAI's format uses:
+- System messages as regular messages with `role: "system"`
+- Mixed content arrays or plain strings
+- Function calling with `tool_calls` and separate `tool` role messages
+- Streaming via SSE with `data:` prefixed chunks
+
+## Message translation (Anthropic → OpenAI)
+
+The proxy converts Anthropic messages to OpenAI format:
+
+```javascript
+function translateMessages(anthropicMessages, system) {
+  const openaiMessages = []
+
+  // System message
+  if (system) {
+    if (typeof system === "string") {
+      openaiMessages.push({ role: "system", content: system })
+    } else if (Array.isArray(system)) {
+      const systemText = system
+        .map((s) => {
+          if (typeof s === "string") return s
+          if (s.type === "text") return s.text
+          return JSON.stringify(s)
+        })
+        .join("\n\n")
+      openaiMessages.push({ role: "system", content: systemText })
+    }
+  }
+
+  // Translate user and assistant messages...
+}
+```
+
+### System messages
+
+<CodeGroup>
+
+```json Anthropic
+{
+  "system": "You are a helpful assistant.",
+  "messages": [...]
+}
+```
+
+```json OpenAI
+{
+  "messages": [
+    { "role": "system", "content": "You are a helpful assistant." },
+    ...
+  ]
+}
+```
+
+</CodeGroup>
+
+### Text messages
+
+<CodeGroup>
+
+```json Anthropic
+{
+  "role": "user",
+  "content": "Hello!"
+}
+```
+
+```json OpenAI
+{
+  "role": "user",
+  "content": "Hello!"
+}
+```
+
+</CodeGroup>
+
+### Image messages
+
+Anthropic's image format uses base64-encoded data with media type:
+
+```javascript
+function translateContentPart(part) {
+  if (part.type === "image") {
+    return {
+      type: "image_url",
+      image_url: {
+        url: `data:${part.source.media_type};base64,${part.source.data}`,
+      },
+    }
+  }
+}
+```
+
+<CodeGroup>
+
+```json Anthropic
+{
+  "role": "user",
+  "content": [
+    { "type": "text", "text": "What's in this image?" },
+    {
+      "type": "image",
+      "source": {
+        "type": "base64",
+        "media_type": "image/jpeg",
+        "data": "/9j/4AAQSkZJRg..."
+      }
+    }
+  ]
+}
+```
+
+```json OpenAI
+{
+  "role": "user",
+  "content": [
+    { "type": "text", "text": "What's in this image?" },
+    {
+      "type": "image_url",
+      "image_url": {
+        "url": "data:image/jpeg;base64,/9j/4AAQSkZJRg..."
+      }
+    }
+  ]
+}
+```
+
+</CodeGroup>
+
+For image messages, the proxy adds a special header:
+
+```javascript
+const hasImages = JSON.stringify(openaiReq.messages).includes("image_url")
+if (hasImages) {
+  headers["Copilot-Vision-Request"] = "true"
+}
+```
+
+## Tool call translation
+
+### Tool definitions
+
+Anthropic's tool schema is converted to OpenAI's function calling format:
+
+```javascript
+function translateTools(anthropicTools) {
+  if (!anthropicTools || anthropicTools.length === 0) return undefined
+
+  return anthropicTools
+    .filter((tool) => tool.type !== "web_search_20250305")
+    .map((tool) => ({
+      type: "function",
+      function: {
+        name: tool.name,
+        description: tool.description || "",
+        parameters: tool.input_schema || { type: "object", properties: {} },
+      },
+    }))
+}
+```
+
+<CodeGroup>
+
+```json Anthropic
+{
+  "tools": [
+    {
+      "name": "get_weather",
+      "description": "Get the current weather",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "location": { "type": "string" }
+        },
+        "required": ["location"]
+      }
+    }
+  ]
+}
+```
+
+```json OpenAI
+{
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get the current weather",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "location": { "type": "string" }
+          },
+          "required": ["location"]
+        }
+      }
+    }
+  ]
+}
+```
+
+</CodeGroup>
+
+<Note>
+  The `web_search_20250305` tool is filtered out and handled separately by the proxy's web search loop.
+</Note>
+
+### Tool use messages
+
+Anthropic uses `tool_use` content blocks, while OpenAI uses `tool_calls` arrays:
+
+```javascript
+if (msg.role === "assistant") {
+  const toolUses = msg.content.filter((p) => p.type === "tool_use")
+  const textParts = msg.content.filter((p) => p.type === "text")
+
+  const assistantMsg = {
+    role: "assistant",
+    content: textParts.map((p) => p.text).join("\n") || null,
+  }
+
+  if (toolUses.length > 0) {
+    assistantMsg.tool_calls = toolUses.map((tu) => ({
+      id: tu.id,
+      type: "function",
+      function: {
+        name: tu.name,
+        arguments: JSON.stringify(tu.input || {}),
+      },
+    }))
+  }
+}
+```
+
+<CodeGroup>
+
+```json Anthropic
+{
+  "role": "assistant",
+  "content": [
+    { "type": "text", "text": "I'll check the weather." },
+    {
+      "type": "tool_use",
+      "id": "toolu_123",
+      "name": "get_weather",
+      "input": { "location": "Paris" }
+    }
+  ]
+}
+```
+
+```json OpenAI
+{
+  "role": "assistant",
+  "content": "I'll check the weather.",
+  "tool_calls": [
+    {
+      "id": "toolu_123",
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "arguments": "{\"location\":\"Paris\"}"
+      }
+    }
+  ]
+}
+```
+
+</CodeGroup>
+
+### Tool results
+
+Anthropic's `tool_result` blocks become separate messages with `role: "tool"`:
+
+```javascript
+if (msg.role === "user") {
+  const toolResults = msg.content.filter((p) => p.type === "tool_result")
+  
+  for (const result of toolResults) {
+    let content
+    if (typeof result.content === "string") {
+      content = result.content
+    } else if (Array.isArray(result.content)) {
+      content = result.content
+        .map((p) => (p.type === "text" ? p.text : JSON.stringify(p)))
+        .join("\n")
+    } else {
+      content = JSON.stringify(result.content)
+    }
+
+    openaiMessages.push({
+      role: "tool",
+      tool_call_id: result.tool_use_id,
+      content: content || "",
+    })
+  }
+}
+```
+
+<CodeGroup>
+
+```json Anthropic
+{
+  "role": "user",
+  "content": [
+    {
+      "type": "tool_result",
+      "tool_use_id": "toolu_123",
+      "content": "The weather in Paris is sunny, 22°C."
+    }
+  ]
+}
+```
+
+```json OpenAI
+{
+  "role": "tool",
+  "tool_call_id": "toolu_123",
+  "content": "The weather in Paris is sunny, 22°C."
+}
+```
+
+</CodeGroup>
+
+## Response translation (OpenAI → Anthropic)
+
+The proxy converts OpenAI responses back to Anthropic format:
+
+```javascript
+function translateResponseToAnthropic(openaiResponse, model) {
+  const choice = openaiResponse.choices?.[0]
+  const content = []
+
+  // Text content
+  if (choice.message?.content) {
+    content.push({ type: "text", text: choice.message.content })
+  }
+
+  // Tool calls
+  if (choice.message?.tool_calls) {
+    for (const tc of choice.message.tool_calls) {
+      content.push({
+        type: "tool_use",
+        id: tc.id,
+        name: tc.function.name,
+        input: (() => {
+          try {
+            return JSON.parse(tc.function.arguments)
+          } catch {
+            return {}
+          }
+        })(),
+      })
+    }
+  }
+
+  // Map finish reason
+  let stopReason = "end_turn"
+  if (choice.finish_reason === "tool_calls") stopReason = "tool_use"
+  else if (choice.finish_reason === "length") stopReason = "max_tokens"
+
+  return {
+    id: openaiResponse.id || `msg_${Date.now()}`,
+    type: "message",
+    role: "assistant",
+    model: model,
+    content: content.length > 0 ? content : [{ type: "text", text: "" }],
+    stop_reason: stopReason,
+    usage: {
+      input_tokens: openaiResponse.usage?.prompt_tokens || 0,
+      output_tokens: openaiResponse.usage?.completion_tokens || 0,
+    },
+  }
+}
+```
+
+### Stop reasons
+
+The proxy maps OpenAI's finish reasons to Anthropic's stop reasons:
+
+| OpenAI | Anthropic |
+|--------|----------|
+| `stop` | `end_turn` |
+| `tool_calls` | `tool_use` |
+| `length` | `max_tokens` |
+| `content_filter` | `end_turn` |
+
+## Streaming translation
+
+Streaming is more complex as it requires translating incremental chunks:
+
+```javascript
+function createStreamTranslator(model, res) {
+  let messageId = `msg_${Date.now()}`
+  let sentStart = false
+  let toolCallBuffers = {}
+  let contentBlockIndex = 0
+
+  function sendSSE(event, data) {
+    const line = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
+    res.write(line)
+  }
+
+  return {
+    processChunk(chunk) {
+      const data = JSON.parse(chunk)
+      const delta = data.choices?.[0]?.delta
+
+      // Handle text content
+      if (delta?.content) {
+        if (!this._inTextBlock) {
+          sendSSE("content_block_start", {
+            type: "content_block_start",
+            index: contentBlockIndex,
+            content_block: { type: "text", text: "" },
+          })
+          this._inTextBlock = true
+        }
+
+        sendSSE("content_block_delta", {
+          type: "content_block_delta",
+          index: contentBlockIndex,
+          delta: { type: "text_delta", text: delta.content },
+        })
+      }
+
+      // Handle tool calls...
+    },
+  }
+}
+```
+
+### Streaming events
+
+The translator emits Anthropic-style streaming events:
+
+<CodeGroup>
+
+```json message_start
+{
+  "type": "message_start",
+  "message": {
+    "id": "msg_1234567890",
+    "type": "message",
+    "role": "assistant",
+    "model": "claude-sonnet-4-5",
+    "content": [],
+    "stop_reason": null,
+    "usage": { "input_tokens": 0, "output_tokens": 0 }
+  }
+}
+```
+
+```json content_block_start
+{
+  "type": "content_block_start",
+  "index": 0,
+  "content_block": {
+    "type": "text",
+    "text": ""
+  }
+}
+```
+
+```json content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 0,
+  "delta": {
+    "type": "text_delta",
+    "text": "Hello"
+  }
+}
+```
+
+```json content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 0
+}
+```
+
+```json message_delta
+{
+  "type": "message_delta",
+  "delta": {
+    "stop_reason": "end_turn",
+    "stop_sequence": null
+  },
+  "usage": { "output_tokens": 42 }
+}
+```
+
+```json message_stop
+{
+  "type": "message_stop"
+}
+```
+
+</CodeGroup>
+
+### Tool call streaming
+
+Tool calls in streaming mode require buffering the JSON arguments:
+
+```javascript
+if (delta?.tool_calls) {
+  for (const tc of delta.tool_calls) {
+    const tcIndex = tc.index ?? 0
+
+    if (tc.id) {
+      // New tool call
+      toolCallBuffers[tcIndex] = {
+        id: tc.id,
+        name: tc.function?.name || "",
+        arguments: tc.function?.arguments || "",
+      }
+
+      sendSSE("content_block_start", {
+        type: "content_block_start",
+        index: contentBlockIndex + tcIndex,
+        content_block: {
+          type: "tool_use",
+          id: tc.id,
+          name: tc.function?.name || "",
+          input: {},
+        },
+      })
+    } else if (tc.function?.arguments) {
+      // Continuation of arguments
+      toolCallBuffers[tcIndex].arguments += tc.function.arguments
+
+      sendSSE("content_block_delta", {
+        type: "content_block_delta",
+        index: contentBlockIndex + tcIndex,
+        delta: {
+          type: "input_json_delta",
+          partial_json: tc.function.arguments,
+        },
+      })
+    }
+  }
+}
+```
+
+## Web search translation
+
+Web search results use special Anthropic-specific content blocks:
+
+```javascript
+contentBlocks.push({
+  type: "server_tool_use",
+  id: `srvtoolu_${Date.now()}_${searchCount}`,
+  name: "web_search",
+  input: { query: searchQuery },
+})
+
+contentBlocks.push({
+  type: "web_search_tool_result",
+  tool_use_id: toolUseId,
+  content: searchResults.length > 0 ? searchResults : {
+    type: "web_search_tool_result_error",
+    error_code: "unavailable",
+  },
+})
+```
+
+These blocks are included in the response but stripped when forwarding to Copilot:
+
+```javascript
+const serverToolUses = msg.content.filter((p) => p.type === "server_tool_use")
+const webSearchResults = msg.content.filter((p) => p.type === "web_search_tool_result")
+
+// Include web search results as context for the model
+for (const wsResult of webSearchResults) {
+  if (Array.isArray(wsResult.content)) {
+    for (const r of wsResult.content) {
+      if (r.type === "web_search_result" && r.title && r.url) {
+        textContent += `\n[Search result: ${r.title} - ${r.url}]`
+      }
+    }
+  }
+}
+```
+
+## Model mapping
+
+The proxy maps Anthropic model names to Copilot model names:
+
+```javascript
+const MODEL_MAP = {
+  "claude-opus-4-6": "claude-opus-4.6",
+  "claude-sonnet-4-5": "claude-sonnet-4.5",
+  "claude-sonnet-4": "claude-sonnet-4",
+  "claude-haiku-4-5": "claude-haiku-4.5",
+  // ... more mappings
+}
+
+function mapModel(anthropicModel) {
+  if (MODEL_MAP[anthropicModel]) return MODEL_MAP[anthropicModel]
+
+  // Pattern matching for unknown versions
+  const m = anthropicModel.toLowerCase()
+  if (m.includes("opus") && m.includes("4.6")) return "claude-opus-4.6"
+  if (m.includes("sonnet") && m.includes("4.5")) return "claude-sonnet-4.5"
+  // ...
+
+  return anthropicModel // Pass through as-is
+}
+```
+
+<Note>
+  The model mapping handles both dated versions (e.g., `claude-opus-4-6-20260214`) and generic versions (e.g., `claude-opus-4-6-latest`).
+</Note>

@@ -1,0 +1,273 @@
+---
+title: Troubleshooting
+description: Common issues and solutions for Claude Code Copilot
+---
+
+This guide covers common issues you may encounter when using Claude Code Copilot and how to resolve them.
+
+## Common errors
+
+<AccordionGroup>
+  <Accordion title="401 Unauthorized from Copilot">
+    This error occurs when your GitHub Copilot authentication token has expired or is invalid.
+
+    **Error message:**
+    ```
+    Copilot API error (401): Unauthorized
+    ```
+
+    **Solution:**
+    
+    Delete your existing auth file and re-authenticate:
+    
+    ```bash
+    rm ~/.claude-copilot-auth.json
+    node scripts/auth.mjs
+    ```
+    
+    The auth script will open GitHub's device code flow in your browser. Follow the prompts to re-authenticate with your GitHub Copilot subscription.
+    
+    <Tip>
+      Your authentication token is stored in `~/.claude-copilot-auth.json`. You can use the `COPILOT_AUTH_FILE` environment variable to specify a custom location.
+    </Tip>
+  </Accordion>
+
+  <Accordion title="EADDRINUSE: address already in use">
+    This error occurs when another process is already using port 18080 (the default proxy port).
+
+    **Error message:**
+    ```
+    ✗ Port 18080 is already in use.
+    ```
+
+    **Solutions:**
+
+    **Option 1: Kill the existing process**
+    
+    Find and terminate the process using port 18080:
+    
+    ```bash
+    lsof -ti:18080 | xargs kill -9
+    ```
+    
+    Then restart the proxy.
+    
+    **Option 2: Use a different port**
+    
+    Set the `COPILOT_PROXY_PORT` environment variable to use an alternative port:
+    
+    ```bash
+    COPILOT_PROXY_PORT=18081 node scripts/proxy.mjs
+    ```
+    
+    If you change the port, make sure to update the `ANTHROPIC_BASE_URL` when launching Claude Code:
+    
+    ```bash
+    ANTHROPIC_BASE_URL=http://localhost:18081 ANTHROPIC_API_KEY=copilot-proxy claude
+    ```
+    
+    <Warning>
+      The proxy server detects this error on startup and provides these exact commands in the error output (scripts/proxy.mjs:1321-1324).
+    </Warning>
+  </Accordion>
+
+  <Accordion title="Proxy running but Claude Code shows errors">
+    If the proxy appears to be running but Claude Code cannot connect or shows authentication errors, the issue is usually with environment variables.
+
+    **Symptoms:**
+    - Claude Code shows connection errors
+    - Messages about missing API key
+    - Requests not reaching the proxy
+
+    **Solution:**
+    
+    Ensure both environment variables are set when launching Claude Code:
+    
+    ```bash
+    ANTHROPIC_BASE_URL=http://localhost:18080 ANTHROPIC_API_KEY=copilot-proxy claude
+    ```
+    
+    Both variables are required:
+    - `ANTHROPIC_BASE_URL` - Points Claude Code to your local proxy instead of Anthropic's servers
+    - `ANTHROPIC_API_KEY` - Can be any non-empty value (the proxy doesn't validate it)
+    
+    <Tip>
+      Use the `./scripts/launch.sh` script to automatically handle these environment variables and ensure the proxy is running.
+    </Tip>
+  </Accordion>
+
+  <Accordion title="Auth file not found">
+    This error occurs when you try to start the proxy without authenticating first.
+
+    **Error message:**
+    ```
+    ✗ Auth file not found: /home/user/.claude-copilot-auth.json
+      Run 'node scripts/auth.mjs' first to authenticate.
+    ```
+
+    **Solution:**
+    
+    Run the authentication script before starting the proxy:
+    
+    ```bash
+    node scripts/auth.mjs
+    ```
+    
+    This will:
+    1. Open GitHub's device code flow in your browser
+    2. Prompt you to authorize the application
+    3. Save your access token to `~/.claude-copilot-auth.json`
+    
+    The proxy checks for this file on startup (scripts/proxy.mjs:416-421).
+  </Accordion>
+
+  <Accordion title="Web search not working">
+    If web search functionality is not working or returning no results, check your search provider configuration.
+
+    **Symptoms:**
+    - Web searches return no results
+    - Error messages about search providers failing
+    - CAPTCHA warnings from DuckDuckGo
+
+    **Console output:**
+    ```
+    ⚠ All search providers failed
+    ⚠ DDG Lite returned CAPTCHA
+    ```
+
+    **Solutions:**
+
+    **Option 1: Use Brave Search API (recommended)**
+    
+    For better and more reliable search results, configure Brave Search:
+    
+    1. Get a free API key from [api.search.brave.com](https://api.search.brave.com/) (2000 queries/month free)
+    2. Set the environment variable:
+    
+    ```bash
+    export BRAVE_API_KEY=your_api_key_here
+    ```
+    
+    The proxy will automatically use Brave Search when the API key is configured.
+    
+    **Option 2: DuckDuckGo fallback**
+    
+    If you're not using Brave Search, the proxy falls back to DuckDuckGo Lite. If DuckDuckGo is showing CAPTCHAs or rate limiting:
+    
+    - Wait a few minutes before trying again
+    - Consider using Brave Search API instead
+    - The proxy automatically tries multiple search providers in sequence (scripts/proxy.mjs:32-49)
+    
+    <Note>
+      The proxy tries search providers in this order: Brave Search → DuckDuckGo Lite → DuckDuckGo Instant Answer API
+    </Note>
+  </Accordion>
+
+  <Accordion title="Docker container fails to start">
+    If the Docker container won't start or keeps restarting, check the logs and configuration.
+
+    **Check container logs:**
+    
+    ```bash
+    docker logs claude-copilot-proxy
+    ```
+    
+    **Common causes:**
+
+    1. **Auth file not mounted:** Ensure `~/.claude-copilot-auth.json` exists before starting Docker
+    2. **Port conflict:** Another service is using port 18080
+    3. **Permission issues:** The auth file volume mount may have incorrect permissions
+
+    **Solutions:**
+
+    Verify auth file exists:
+    ```bash
+    ls -la ~/.claude-copilot-auth.json
+    ```
+
+    Check if port is available:
+    ```bash
+    lsof -i :18080
+    ```
+
+    Rebuild the container:
+    ```bash
+    docker compose down
+    docker compose up -d --build
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Health check
+
+You can verify the proxy is running correctly by checking the health endpoint:
+
+```bash
+curl http://localhost:18080/health
+```
+
+Expected response:
+```json
+{
+  "status": "ok",
+  "provider": "github-copilot"
+}
+```
+
+This endpoint is defined in scripts/proxy.mjs:876-879.
+
+## Debug mode
+
+For troubleshooting streaming issues, enable debug logging:
+
+```bash
+DEBUG_STREAM=1 node scripts/proxy.mjs
+```
+
+This will log detailed information about streaming chunks from the Copilot API (scripts/proxy.mjs:689).
+
+## Logs and diagnostics
+
+### Proxy logs
+
+The proxy logs all requests and responses to the console:
+
+```
+[2026-03-03T10:15:30.000Z] POST /v1/messages
+→ claude-sonnet-4-5 → claude-sonnet-4.5 | stream | 3 messages
+✓ Response sent
+```
+
+Each log entry shows:
+- Timestamp and request method/path
+- Model mapping (Anthropic → Copilot)
+- Stream mode and message count
+- Status and completion
+
+### Docker logs
+
+For Docker deployments, view container logs:
+
+```bash
+# Follow logs in real-time
+docker logs -f claude-copilot-proxy
+
+# View last 100 lines
+docker logs --tail 100 claude-copilot-proxy
+
+# View logs with timestamps
+docker logs -t claude-copilot-proxy
+```
+
+## Getting help
+
+If you encounter an issue not covered here:
+
+1. Check the [GitHub issues](https://github.com/samarth777/claude-code-copilot/issues)
+2. Review the console logs for error messages
+3. Verify your GitHub Copilot subscription is active
+4. Ensure you're using Node.js 18 or later
+
+<Tip>
+  The proxy uses zero dependencies - it's pure Node.js. If you encounter issues, they're usually related to authentication, port conflicts, or environment variables.
+</Tip>

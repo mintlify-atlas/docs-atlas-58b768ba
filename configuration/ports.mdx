@@ -1,0 +1,205 @@
+---
+title: Port configuration
+description: Configure and manage the proxy server port
+---
+
+The Claude Code Copilot proxy listens on a configurable port for incoming API requests. Understanding port configuration is essential for running multiple instances or resolving conflicts.
+
+## Default port
+
+By default, the proxy server runs on port **18080**:
+
+```bash
+node scripts/proxy.mjs
+# Server starts on http://localhost:18080
+```
+
+Source: `scripts/proxy.mjs:18`
+
+## Changing the port
+
+Set the `COPILOT_PROXY_PORT` environment variable to use a different port:
+
+<CodeGroup>
+```bash Unix/Linux/macOS
+export COPILOT_PROXY_PORT=3000
+node scripts/proxy.mjs
+```
+
+```bash Windows (Command Prompt)
+set COPILOT_PROXY_PORT=3000
+node scripts\proxy.mjs
+```
+
+```bash Windows (PowerShell)
+$env:COPILOT_PROXY_PORT=3000
+node scripts\proxy.mjs
+```
+
+```bash Inline (single command)
+COPILOT_PROXY_PORT=3000 node scripts/proxy.mjs
+```
+</CodeGroup>
+
+When you change the port, update your Claude Code configuration:
+
+```bash
+# If proxy runs on port 3000
+export ANTHROPIC_BASE_URL=http://localhost:3000
+export ANTHROPIC_API_KEY=copilot-proxy
+claude
+```
+
+## Port conflicts
+
+If port 18080 is already in use, you'll see this error:
+
+```
+✗ Port 18080 is already in use.
+  Kill the existing process:  lsof -ti:18080 | xargs kill -9
+  Or use a different port:    COPILOT_PROXY_PORT=18081 node scripts/proxy.mjs
+```
+
+Source: `scripts/proxy.mjs:1322-1324`
+
+### Resolving port conflicts
+
+<AccordionGroup>
+  <Accordion title="Option 1: Use a different port">
+    The simplest solution is to run the proxy on a different port:
+
+    ```bash
+    COPILOT_PROXY_PORT=18081 node scripts/proxy.mjs
+    ```
+
+    Then update Claude Code to use the new port:
+    ```bash
+    export ANTHROPIC_BASE_URL=http://localhost:18081
+    export ANTHROPIC_API_KEY=copilot-proxy
+    claude
+    ```
+  </Accordion>
+
+  <Accordion title="Option 2: Find and kill the conflicting process">
+    Find which process is using port 18080:
+
+    <CodeGroup>
+    ```bash macOS/Linux
+    # Find the process ID
+    lsof -ti:18080
+
+    # Kill the process
+    lsof -ti:18080 | xargs kill -9
+    ```
+
+    ```bash Windows
+    # Find the process using port 18080
+    netstat -ano | findstr :18080
+
+    # Kill the process by PID (replace 1234 with actual PID)
+    taskkill /PID 1234 /F
+    ```
+    </CodeGroup>
+  </Accordion>
+
+  <Accordion title="Option 3: Check if proxy is already running">
+    You may have already started the proxy server. Verify it's responding:
+
+    ```bash
+    curl http://localhost:18080/health
+    ```
+
+    Expected response:
+    ```json
+    {"status":"ok","provider":"github-copilot"}
+    ```
+
+    If you get this response, the proxy is already running and ready to use.
+
+    Source: `scripts/proxy.mjs:876-879`
+  </Accordion>
+</AccordionGroup>
+
+## Docker port mapping
+
+When using Docker, the port mapping is defined in `docker-compose.yml`:
+
+```yaml docker-compose.yml
+services:
+  proxy:
+    ports:
+      - "18080:18080"  # host:container
+    environment:
+      - COPILOT_PROXY_PORT=18080
+```
+
+Source: `docker-compose.yml:6-11`
+
+To use a different port on the host:
+
+```yaml docker-compose.yml
+services:
+  proxy:
+    ports:
+      - "3000:18080"  # Access proxy at http://localhost:3000
+    environment:
+      - COPILOT_PROXY_PORT=18080  # Container still uses 18080 internally
+```
+
+Then configure Claude Code:
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:3000
+export ANTHROPIC_API_KEY=copilot-proxy
+claude
+```
+
+## Running multiple instances
+
+You can run multiple proxy instances on different ports:
+
+<CodeGroup>
+```bash Terminal 1 (port 18080)
+COPILOT_PROXY_PORT=18080 node scripts/proxy.mjs
+```
+
+```bash Terminal 2 (port 18081)
+COPILOT_PROXY_PORT=18081 node scripts/proxy.mjs
+```
+</CodeGroup>
+
+Each instance can have different configurations:
+
+```bash Instance with Brave Search
+COPILOT_PROXY_PORT=18080 \
+BRAVE_API_KEY=your-key \
+node scripts/proxy.mjs
+```
+
+```bash Instance without Brave Search
+COPILOT_PROXY_PORT=18081 node scripts/proxy.mjs
+```
+
+## Health check endpoint
+
+Verify the proxy is running and check which port it's using:
+
+```bash
+curl http://localhost:18080/health
+```
+
+Response:
+```json
+{
+  "status": "ok",
+  "provider": "github-copilot"
+}
+```
+
+This endpoint is useful for:
+- Monitoring server health
+- Verifying the correct port
+- Load balancer health checks
+- Docker container health checks
+
+Source: `scripts/proxy.mjs:876-879`
